@@ -1,6 +1,6 @@
 # Panel Tabs Redux
 
-Panel Tabs Redux is a C++ reimplementation of the Delphi FarTabs plugin for FAR Manager 3.0 build 6666 or newer. The left and right filesystem panels each have their own list of tabs. An unpinned tab follows the directory as you browse. Tabs remember the cursor position when you switch away during the session. Tab commands save directory paths, custom names, and pin states to FAR's profile.
+Panel Tabs Redux is a C++ reimplementation of the Delphi FarTabs plugin for FAR Manager 3.0 build 6666 or newer. The left and right filesystem panels each have their own list of tabs. An unpinned tab follows the directory as you browse. Tabs remember the cursor position when you switch away during the session. Tab commands save directories, names, pin states, shortcuts, and order to FAR's profile.
 
 The picker uses FAR's native menu and input boxes. The always-visible strip in the Delphi plugin uses a console overlay, so this version puts the tab list in the picker. Tabs can save filesystem folders and locations exposed through FAR folder shortcuts, including archives and remote folders.
 
@@ -8,7 +8,9 @@ The picker uses FAR's native menu and input boxes. The always-visible strip in t
 
 Choose **Panel Tabs Redux** from **Alt+F1** for the left panel or **Alt+F2** for the right panel, regardless of which panel has focus. If the entry is hidden, press **F9** in the drive selector and enable **Show plugins**. **F11 → Panel Tabs Redux** and `ptabs:` open the picker for the active panel.
 
-In the picker, press **Insert** to add a directory as a tab, **F4** to edit the highlighted tab's directory, **F2** to rename it, or **Delete** to close it. **Enter** and **1–9** select tabs, and **Tab** shows the other visible filesystem panel's list. The checkmark identifies the current tab. A new picker entry stays inactive until you select it. Editing the current tab also changes the panel's directory.
+In the picker, press **Insert** to add a tab, **F4** to edit it, or **Delete** to close it. **Enter** or an assigned shortcut selects a tab. **Tab** shows the other visible filesystem panel's list. The checkmark identifies the current tab. A new picker entry stays inactive until you select it.
+
+**F4** opens an editor for the tab's name, path, shortcut, and pin state. Changing the current tab's path also changes the panel's directory. New tabs get the first available shortcut from **1–9**, then **A–Z**. Clear the shortcut field to leave the tab unassigned. If a shortcut is already in use on that panel, **Use anyway** transfers it to the edited tab. **Cancel** returns to the editor with the draft intact. Press **Ctrl+Up** or **Ctrl+Down** in the picker to move the highlighted tab while keeping its shortcut.
 
 Press **F3** in the picker to pin or unpin the highlighted tab. A pinned tab keeps its saved directory while you browse. Select it again to return to that directory. **F4** can still change the saved directory. If you unpin the current tab, it adopts the directory you are browsing. New tabs are unpinned by default.
 
@@ -28,9 +30,9 @@ With the supplied LuaMacro script, these keys work from an empty FAR command lin
 | **Ctrl+Alt+T** | Open a tab in the active panel's current directory |
 | **Ctrl+Alt+W** | Close the current tab |
 | **Ctrl+Alt+PgUp / PgDn** | Previous / next tab |
-| **Alt+Shift+1–9** | Switch to a numbered tab |
+| **Alt+Shift+1–9 / A–Z** | Switch to the tab with that shortcut |
 
-Edit `PanelTabs.lua` to rebind the keys. The same commands are available through `ptabs:new`, `ptabs:close`, `ptabs:prev`, `ptabs:next`, and `ptabs:1` through `ptabs:9`.
+Edit `PanelTabs.lua` to rebind the keys. The same commands are available through `ptabs:new`, `ptabs:close`, `ptabs:prev`, `ptabs:next`, and a shortcut such as `ptabs:1` or `ptabs:A`.
 
 ## Build and install
 

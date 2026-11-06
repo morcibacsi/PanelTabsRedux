@@ -22,11 +22,12 @@ namespace
 constexpr GUID PluginId{0x88ff2c99, 0xfaac, 0x494f, {0x8b, 0x40, 0xb5, 0xb5, 0xf2, 0x74, 0xed, 0xfc}};
 constexpr GUID MenuId{0x5121d451, 0x1fa2, 0x418e, {0x9c, 0xf3, 0xe2, 0xec, 0x1e, 0x94, 0x27, 0xfd}};
 constexpr GUID DiskMenuId{0xbb777a2e, 0xeb7c, 0x4278, {0xbb, 0x7a, 0x60, 0x9e, 0x21, 0x3e, 0x7f, 0xf4}};
-constexpr GUID RenameId{0x3bba88e6, 0x1048, 0x4832, {0x9c, 0x54, 0x3b, 0xc7, 0xdf, 0xfc, 0x7d, 0x7c}};
-constexpr GUID EditPathId{0x52df1904, 0x42ad, 0x431e, {0xa1, 0x57, 0x82, 0x3a, 0x28, 0x7f, 0xa7, 0x61}};
+constexpr GUID NewTabId{0x52df1904, 0x42ad, 0x431e, {0xa1, 0x57, 0x82, 0x3a, 0x28, 0x7f, 0xa7, 0x61}};
+constexpr GUID EditTabId{0x4014da2b, 0x078a, 0x43e8, {0x8b, 0xc0, 0x25, 0x29, 0x7e, 0xb7, 0x78, 0x4e}};
 constexpr GUID ErrorId{0x821e68d3, 0x31ea, 0x4901, {0x8b, 0xc0, 0x41, 0x70, 0xf2, 0x2a, 0x23, 0xd8}};
 constexpr auto Title = L"Panel Tabs Redux";
-constexpr auto SettingsKey = L"TabListsV4";
+constexpr auto SettingsKey = L"TabListsV5";
+constexpr std::wstring_view ShortcutKeys = L"123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 constexpr std::size_t TabLimit = 999;
 
 struct Cursor
@@ -110,6 +111,7 @@ struct Tab
     std::wstring name;
     Cursor cursor;
     bool pinned{};
+    wchar_t shortcut{};
 };
 
 struct TabList
@@ -123,6 +125,27 @@ PluginStartupInfo api{};
 std::array<TabList, 2> lists;
 bool dirty{};
 bool canSave = true;
+
+wchar_t ParseShortcut(std::wstring_view text)
+{
+    if (text.size() != 1)
+        return {};
+    auto key = text.front();
+    if (key >= L'a' && key <= L'z')
+        key = static_cast<wchar_t>(key - L'a' + L'A');
+    return ShortcutKeys.find(key) != ShortcutKeys.npos ? key : wchar_t{};
+}
+
+void AppendTab(TabList& list, Location location, Cursor cursor = {})
+{
+    const auto available = std::ranges::find_if(ShortcutKeys, [&](wchar_t key)
+    {
+        return std::ranges::find(list.tabs, key, &Tab::shortcut) == list.tabs.end();
+    });
+    const auto shortcut = available == ShortcutKeys.end() ? wchar_t{} : *available;
+    list.tabs.push_back({std::move(location), {}, std::move(cursor), false, shortcut});
+    dirty = true;
+}
 
 void Warn(const wchar_t* message, const wchar_t* detail = nullptr)
 {
@@ -205,14 +228,23 @@ void Load()
             return;
 
         list.tabs.resize(count);
+        std::wstring usedKeys;
         for (auto& tab : list.tabs)
         {
             auto& location = tab.location;
-            std::wstring guid;
+            std::wstring guid, shortcut;
             if (!(input >> std::quoted(location.path) >> std::quoted(tab.name) >> tab.pinned
-                        >> std::quoted(guid) >> std::quoted(location.file) >> std::quoted(location.param)) ||
+                        >> std::quoted(guid) >> std::quoted(location.file) >> std::quoted(location.param)
+                        >> std::quoted(shortcut)) ||
                 FAILED(IIDFromString(guid.c_str(), &location.plugin)) || !location.Valid())
                 return;
+            if (!shortcut.empty())
+            {
+                tab.shortcut = ParseShortcut(shortcut);
+                if (!tab.shortcut || usedKeys.find(tab.shortcut) != usedKeys.npos)
+                    return;
+                usedKeys += tab.shortcut;
+            }
         }
     }
     if (input >> std::ws && input.eof())
@@ -241,9 +273,10 @@ void Save()
                 ++active;
             wchar_t guid[39]{};
             StringFromGUID2(location.plugin, guid, static_cast<int>(std::size(guid)));
+            const wchar_t shortcut[]{tab.shortcut, L'\0'};
             entries << std::quoted(location.path) << L' ' << std::quoted(tab.name) << L' ' << tab.pinned
                     << L' ' << std::quoted(guid) << L' ' << std::quoted(location.file)
-                    << L' ' << std::quoted(location.param) << L'\n';
+                    << L' ' << std::quoted(location.param) << L' ' << std::quoted(shortcut) << L'\n';
         }
         output << count << L' ' << (count ? std::min(active, count - 1) : 0) << L'\n' << entries.str();
     }
@@ -411,9 +444,8 @@ TabList* Sync(HANDLE panel)
                 Warn(L"The panel's tab list is full. Open FAR in a saved tab's directory to manage it.");
                 return nullptr;
             }
-            list.tabs.push_back({location, {}, {}});
+            AppendTab(list, location);
             list.active = list.tabs.size() - 1;
-            dirty = true;
         }
     }
     list.attached = true;
@@ -445,9 +477,8 @@ void Add(HANDLE panel, TabList& list)
     auto location = CurrentLocation(panel);
     if (!location.Valid())
         return;
-    list.tabs.push_back({std::move(location), {}, ReadCursor(panel, FilePanel(panel))});
+    AppendTab(list, std::move(location), ReadCursor(panel, FilePanel(panel)));
     list.active = list.tabs.size() - 1;
-    dirty = true;
 }
 
 bool OpenLocation(HANDLE panel, const Location& location)
@@ -545,30 +576,29 @@ void Close(HANDLE panel, TabList& list, std::size_t index)
     dirty = true;
 }
 
-void Rename(Tab& tab)
+void MoveTab(TabList& list, std::size_t& highlight, bool down)
 {
-    wchar_t name[128]{};
-    if (api.InputBox(&PluginId, &RenameId, L"Rename tab", L"Leave blank to use the directory path",
-                     nullptr, tab.name.c_str(), name, std::size(name), nullptr,
-                     FIB_BUTTONS | FIB_ENABLEEMPTY) && tab.name != name)
-    {
-        tab.name = name;
-        dirty = true;
-    }
+    if (down ? highlight + 1 == list.tabs.size() : highlight == 0)
+        return;
+    const auto destination = down ? highlight + 1 : highlight - 1;
+    std::swap(list.tabs[highlight], list.tabs[destination]);
+    if (list.active == highlight)
+        list.active = destination;
+    else if (list.active == destination)
+        list.active = highlight;
+    highlight = destination;
+    dirty = true;
 }
 
-std::optional<std::wstring> PromptForDirectory(const wchar_t* title, const Location& location)
+std::optional<std::wstring> PromptForDirectory(const std::wstring& initialPath)
 {
-    const auto plugin = location.IsPlugin();
-    const auto prompt = plugin ? L"Directory on the plugin panel" : L"Absolute directory path";
     std::wstring path(32768, L'\0');
-    if (!api.InputBox(&PluginId, &EditPathId, title, prompt,
-                      nullptr, location.path.c_str(), path.data(), path.size(), nullptr,
-                      FIB_BUTTONS | (plugin ? FIB_ENABLEEMPTY : FIB_EDITPATH)))
+    if (!api.InputBox(&PluginId, &NewTabId, L"New tab", L"Absolute directory path",
+                      nullptr, initialPath.c_str(), path.data(), path.size(), nullptr, FIB_BUTTONS | FIB_EDITPATH))
         return std::nullopt;
 
     path.resize(std::char_traits<wchar_t>::length(path.c_str()));
-    if (!plugin && !std::filesystem::path(path).is_absolute())
+    if (!std::filesystem::path(path).is_absolute())
     {
         Warn(L"Enter an absolute directory path.");
         return std::nullopt;
@@ -576,29 +606,116 @@ std::optional<std::wstring> PromptForDirectory(const wchar_t* title, const Locat
     return path;
 }
 
-void EditPath(HANDLE panel, TabList& list, std::size_t index)
+struct TabEdit
+{
+    std::wstring name;
+    std::wstring path;
+    std::wstring shortcut;
+    bool pinned;
+};
+
+bool ShowTabEditor(const Location& location, TabEdit& edit)
+{
+    enum Item { Border, NameLabel, Name, PathLabel, Path, ShortcutLabel, Shortcut,
+                ShortcutHelp, Pinned, Separator, SaveButton, CancelButton };
+    const auto pathFlags = location.livePanel ? DIF_DISABLE :
+        DIF_SELECTONENTRY | (location.IsPlugin() ? DIF_NONE : DIF_EDITPATH);
+    const FarDialogItem items[]{
+        {DI_DOUBLEBOX, 3, 1, 60, 10, 0, nullptr, nullptr, DIF_NONE, L"Edit tab"},
+        {DI_TEXT, 5, 3, 0, 3, 0, nullptr, nullptr, DIF_NONE, L"&Name"},
+        {DI_EDIT, 17, 3, 58, 3, 0, nullptr, nullptr, DIF_FOCUS | DIF_SELECTONENTRY, edit.name.c_str(), 127},
+        {DI_TEXT, 5, 4, 0, 4, 0, nullptr, nullptr, DIF_NONE, L"&Path"},
+        {DI_EDIT, 17, 4, 58, 4, 0, nullptr, nullptr, pathFlags, edit.path.c_str(), 32767},
+        {DI_TEXT, 5, 5, 0, 5, 0, nullptr, nullptr, DIF_NONE, L"Short&cut"},
+        {DI_EDIT, 17, 5, 20, 5, 0, nullptr, nullptr, DIF_SELECTONENTRY, edit.shortcut.c_str(), 127},
+        {DI_TEXT, 23, 5, 0, 5, 0, nullptr, nullptr, DIF_NONE, L"1–9 or A–Z, blank clears"},
+        {DI_CHECKBOX, 5, 6, 0, 6, edit.pinned ? BSTATE_CHECKED : BSTATE_UNCHECKED,
+         nullptr, nullptr, DIF_NONE, L"P&inned"},
+        {DI_TEXT, 0, 8, 0, 8, 0, nullptr, nullptr, DIF_SEPARATOR, L""},
+        {DI_BUTTON, 0, 9, 0, 9, 0, nullptr, nullptr, DIF_CENTERGROUP | DIF_DEFAULTBUTTON, L"&Save"},
+        {DI_BUTTON, 0, 9, 0, 9, 0, nullptr, nullptr, DIF_CENTERGROUP, L"Cancel"},
+    };
+    const auto handle = api.DialogInit(&PluginId, &EditTabId, -1, -1, 64, 12, nullptr,
+                                      items, std::size(items), 0, FDLG_NONE, nullptr, nullptr);
+    if (!handle || handle == INVALID_HANDLE_VALUE)
+        return false;
+    const std::unique_ptr<void, FARAPIDIALOGFREE> dialog(handle, api.DialogFree);
+    if (api.DialogRun(handle) != SaveButton)
+        return false;
+
+    const auto text = [&](Item item)
+    {
+        const auto value = reinterpret_cast<const wchar_t*>(api.SendDlgMessage(handle, DM_GETCONSTTEXTPTR,
+                                                                               item, nullptr));
+        return value ? std::wstring(value) : std::wstring{};
+    };
+    edit.name = text(Name);
+    if (!location.livePanel)
+        edit.path = text(Path);
+    edit.shortcut = text(Shortcut);
+    edit.pinned = api.SendDlgMessage(handle, DM_GETCHECK, Pinned, nullptr) == BSTATE_CHECKED;
+    return true;
+}
+
+bool ConfirmShortcutTransfer(const Tab& previous)
+{
+    const auto assignedTo = previous.name.empty() ? LocationLabel(previous.location) : previous.name;
+    const auto detail = L"Currently assigned to " + assignedTo;
+    const wchar_t* items[]{L"Reassign shortcut", L"Move this shortcut to the edited tab?", detail.c_str(),
+                          L"&Cancel", L"&Use anyway"};
+    return api.Message(&PluginId, &ErrorId, FMSG_WARNING, nullptr, items, std::size(items), 2) == 1;
+}
+
+void EditTab(HANDLE panel, TabList& list, std::size_t index)
 {
     auto& tab = list.tabs[index];
-    if (tab.location.livePanel)
+    TabEdit edit{tab.name, tab.location.path, tab.shortcut ? std::wstring(1, tab.shortcut) : L"", tab.pinned};
+    while (ShowTabEditor(tab.location, edit))
     {
-        Warn(L"This panel does not provide a folder shortcut.");
-        return;
-    }
-    auto path = PromptForDirectory(L"Edit tab directory", tab.location);
-    if (!path || *path == tab.location.path)
-        return;
-    auto target = tab.location;
-    target.path = std::move(*path);
-    if (index == list.active)
-    {
-        const auto current = CurrentLocation(panel);
-        if (target != current && !GoToLocation(panel, list, current, target))
+        const auto shortcut = ParseShortcut(edit.shortcut);
+        if (!edit.shortcut.empty() && !shortcut)
+        {
+            Warn(L"Enter a single digit from 1 to 9 or a letter from A to Z.");
+            continue;
+        }
+        const auto pathChanged = edit.path != tab.location.path;
+        if (pathChanged && !tab.location.IsPlugin() && !std::filesystem::path(edit.path).is_absolute())
+        {
+            Warn(L"Enter an absolute directory path.");
+            continue;
+        }
+        if (!pathChanged && tab.name == edit.name && tab.shortcut == shortcut && tab.pinned == edit.pinned)
             return;
-    }
 
-    tab.location = std::move(target);
-    tab.cursor = {};
-    dirty = true;
+        const auto previous = shortcut && shortcut != tab.shortcut
+            ? std::ranges::find(list.tabs, shortcut, &Tab::shortcut) : list.tabs.end();
+        if (previous != list.tabs.end() && !ConfirmShortcutTransfer(*previous))
+            continue;
+
+        if (pathChanged)
+        {
+            auto target = tab.location;
+            target.path = edit.path;
+            if (index == list.active)
+            {
+                const auto current = CurrentLocation(panel);
+                if (target != current && !GoToLocation(panel, list, current, target))
+                    continue;
+            }
+            tab.location = std::move(target);
+            tab.cursor = {};
+        }
+        if (previous != list.tabs.end())
+            previous->shortcut = {};
+        const auto unpinCurrent = tab.pinned && !edit.pinned && index == list.active;
+        tab.name = std::move(edit.name);
+        tab.shortcut = shortcut;
+        tab.pinned = edit.pinned;
+        dirty = true;
+        if (unpinCurrent && !pathChanged)
+            Sync(panel);
+        return;
+    }
 }
 
 void AppendMenuText(std::wstring& line, std::wstring_view text)
@@ -613,8 +730,8 @@ void AppendMenuText(std::wstring& line, std::wstring_view text)
 
 void Pick(HANDLE panel, TabList* list)
 {
-    constexpr FarKey keys[]{{VK_INSERT, 0}, {VK_DELETE, 0}, {VK_F2, 0}, {VK_TAB, 0},
-                            {VK_F4, 0}, {VK_F3, 0}, {}};
+    constexpr FarKey keys[]{{VK_INSERT, 0}, {VK_DELETE, 0}, {VK_TAB, 0}, {VK_F4, 0}, {VK_F3, 0},
+                            {VK_UP, LEFT_CTRL_PRESSED}, {VK_DOWN, LEFT_CTRL_PRESSED}, {}};
     auto highlight = list->active;
     for (;;)
     {
@@ -624,9 +741,14 @@ void Pick(HANDLE panel, TabList* list)
         {
             const auto& tab = list->tabs[i];
             auto& label = labels[i];
-            if (i < 9)
+            if (tab.shortcut)
+            {
                 label += L'&';
-            label += std::to_wstring(i + 1) + L"  ";
+                label += tab.shortcut;
+            }
+            else
+                label += L'-';
+            label += L"  ";
             if (tab.pinned)
                 label += L"[Pinned] ";
             if (NeedsLivePanel(tab.location))
@@ -646,7 +768,7 @@ void Pick(HANDLE panel, TabList* list)
         intptr_t pressed = -1;
         const auto result = api.Menu(&PluginId, &MenuId, -1, -1, 0, FMENU_WRAPMODE,
                                      left ? L"Left panel tabs" : L"Right panel tabs",
-                                     L"Ins New  Del Close  F2 Rename  F3 Pin  F4 Edit path  Tab Other panel",
+                                     L"Ins New  Del Close  F3 Pin  F4 Edit  Ctrl+↑/↓ Move  Tab Other",
                                      nullptr, keys, &pressed, items.data(), items.size());
         if (result < 0 || static_cast<std::size_t>(result) >= items.size())
             return;
@@ -661,14 +783,13 @@ void Pick(HANDLE panel, TabList* list)
                     location = {};
                 if (!location.IsPlugin())
                 {
-                    auto path = PromptForDirectory(L"New tab", location);
+                    auto path = PromptForDirectory(location.path);
                     if (!path)
                         break;
                     location.path = std::move(*path);
                 }
-                list->tabs.push_back({std::move(location), {}, {}});
+                AppendTab(*list, std::move(location));
                 highlight = list->tabs.size() - 1;
-                dirty = true;
             }
             break;
         case 1:
@@ -676,9 +797,6 @@ void Pick(HANDLE panel, TabList* list)
             highlight = std::min(highlight, list->tabs.size() - 1);
             break;
         case 2:
-            Rename(list->tabs[highlight]);
-            break;
-        case 3:
         {
             const auto other = panel == PANEL_ACTIVE ? PANEL_PASSIVE : PANEL_ACTIVE;
             if (auto* otherList = Sync(other))
@@ -691,10 +809,10 @@ void Pick(HANDLE panel, TabList* list)
                 Warn(L"The other panel must be a visible file or plugin panel.");
             break;
         }
-        case 4:
-            EditPath(panel, *list, highlight);
+        case 3:
+            EditTab(panel, *list, highlight);
             break;
-        case 5:
+        case 4:
         {
             auto& tab = list->tabs[highlight];
             tab.pinned = !tab.pinned;
@@ -703,6 +821,10 @@ void Pick(HANDLE panel, TabList* list)
                 Sync(panel);
             break;
         }
+        case 5:
+        case 6:
+            MoveTab(*list, highlight, pressed == 6);
+            break;
         default:
             if (SwitchTo(panel, *list, highlight))
                 return;
@@ -717,11 +839,11 @@ void Dispatch(std::wstring_view command, HANDLE panel)
     const auto first = command.find_first_not_of(whitespace);
     command = first == command.npos
         ? std::wstring_view{} : command.substr(first, command.find_last_not_of(whitespace) - first + 1);
-    const bool number = command.size() == 1 && command.front() >= L'1' && command.front() <= L'9';
+    const auto shortcut = ParseShortcut(command);
     if (!command.empty() && command != L"list" && command != L"new" &&
-        command != L"close" && command != L"next" && command != L"prev" && !number)
+        command != L"close" && command != L"next" && command != L"prev" && !shortcut)
     {
-        Warn(L"Use ptabs: with list, new, close, next, prev, or a tab number from 1 to 9.");
+        Warn(L"Use ptabs: with list, new, close, next, prev, or a tab shortcut (1–9 or A–Z).");
         return;
     }
 
@@ -731,7 +853,6 @@ void Dispatch(std::wstring_view command, HANDLE panel)
         Warn(L"Panel tabs need a visible file or plugin panel.");
         return;
     }
-    const auto count = list->tabs.size();
     if (command.empty() || command == L"list")
         Pick(panel, list);
     else if (command == L"new")
@@ -742,13 +863,30 @@ void Dispatch(std::wstring_view command, HANDLE panel)
         SwitchTo(panel, *list, AdjacentTab(panel, *list, command == L"next").value_or(list->active));
     else
     {
-        const auto index = static_cast<std::size_t>(command.front() - L'1');
-        if (index < count)
-            SwitchTo(panel, *list, index);
+        const auto tab = std::ranges::find(list->tabs, shortcut, &Tab::shortcut);
+        if (tab != list->tabs.end())
+            SwitchTo(panel, *list, static_cast<std::size_t>(tab - list->tabs.begin()));
         else
             MessageBeep(MB_OK);
     }
     Save();
+}
+
+FarMacroCall* ShortcutAvailable(std::wstring_view text)
+{
+    static FarMacroValue value(false);
+    static FarMacroCall result{sizeof(result), 1, &value, nullptr, nullptr};
+    value = FarMacroValue(false);
+    const auto key = ParseShortcut(text);
+    const auto info = FilePanel(PANEL_ACTIVE);
+    if (key && info.StructSize)
+    {
+        const auto& list = lists[(info.Flags & PFLAGS_PANELLEFT) ? 0 : 1];
+        const auto tab = std::ranges::find(list.tabs, key, &Tab::shortcut);
+        value.Boolean = tab != list.tabs.end() &&
+            (!NeedsLivePanel(tab->location) || CanOpenLocation(ReadLocation(PANEL_ACTIVE, info), tab->location));
+    }
+    return &result;
 }
 }
 
@@ -803,7 +941,12 @@ HANDLE WINAPI OpenW(const OpenInfo* info)
         {
             const auto* args = reinterpret_cast<const OpenMacroInfo*>(info->Data);
             if (args && args->Count && args->Values[0].Type == FMVT_STRING && args->Values[0].String)
+            {
                 command = args->Values[0].String;
+                if (std::wstring_view(command) == L"has-shortcut" && args->Count == 2 &&
+                    args->Values[1].Type == FMVT_STRING && args->Values[1].String)
+                    return ShortcutAvailable(args->Values[1].String);
+            }
         }
         else if (info->OpenFrom == OPEN_LEFTDISKMENU || info->OpenFrom == OPEN_RIGHTDISKMENU)
         {
