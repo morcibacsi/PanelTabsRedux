@@ -1,0 +1,92 @@
+﻿.Language=English,English
+
+// Keep the first six messages in order for PanelTabs.lua.
+
+//[MacroPick]
+"Pick a tab"
+//[MacroNew]
+"Open a tab"
+//[MacroClose]
+"Close the current tab"
+//[MacroPrevious]
+"Previous tab"
+//[MacroNext]
+"Next tab"
+//[MacroGoTo]
+"Go to tab %s"
+//[PluginPanel]
+"Plugin panel"
+//[DecryptFailed]
+"FAR could not decrypt the saved tab lists for this Windows account."
+//[TabListsTooLarge]
+"The tab lists are too large to save."
+//[EncryptFailed]
+"Windows could not encrypt the tab lists."
+//[SaveFailed]
+"FAR could not save the tab lists to this profile."
+//[DetachedTabListFull]
+"The panel's tab list is full. Open FAR in a saved tab's directory to manage it."
+//[TabLimitReached]
+"This panel has reached its tab limit."
+//[RequiresLivePanel]
+"Open this location on the panel before selecting its tab."
+//[OpenAndRestoreFailed]
+"Cannot open the tab or restore the previous location."
+//[OpenFailed]
+"Cannot open the tab's location."
+//[KeepOneTab]
+"Keep at least one tab on each panel."
+//[OpenAnotherTab]
+"Open another tab before closing this one."
+//[NewTab]
+"New tab"
+//[AbsolutePathPrompt]
+"Absolute directory path"
+//[InvalidAbsolutePath]
+"Enter an absolute directory path."
+//[EditTab]
+"Edit tab"
+//[Name]
+"&Name"
+//[Path]
+"&Path"
+//[Shortcut]
+"Short&cut"
+//[ShortcutHint]
+"1–9 or A–Z, blank clears"
+//[Pinned]
+"P&inned"
+//[Save]
+"&Save"
+//[Cancel]
+"&Cancel"
+//[AssignedTo]
+"Currently assigned to "
+//[ReassignShortcut]
+"Reassign shortcut"
+//[ReassignPrompt]
+"Move this shortcut to the edited tab?"
+//[UseAnyway]
+"&Use anyway"
+//[InvalidShortcut]
+"Enter a single digit from 1 to 9 or a letter from A to Z."
+//[PinnedTag]
+"[Pinned]"
+//[OpenOnlyTag]
+"[Open only]"
+//[LeftPanelTabs]
+"Left panel tabs"
+//[RightPanelTabs]
+"Right panel tabs"
+//[PickerHelp]
+"Ins New  Del Close  F3 Pin  F4 Edit  Ctrl+↑/↓ Move  Tab Other"
+//[OtherPanelUnavailable]
+"The other panel must be a visible file or plugin panel."
+//[CommandHelp]
+"Use ptabs: with list, new, close, next, prev, or a tab shortcut (1–9 or A–Z)."
+//[PanelUnavailable]
+"Panel tabs need a visible file or plugin panel."
+//[ReadFailed]
+"FAR could not read the saved tab lists."
+//[OperationFailed]
+"Could not complete the tab operation."

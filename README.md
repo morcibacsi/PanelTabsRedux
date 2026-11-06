@@ -47,11 +47,17 @@ cmake --build out/x64 --config Release
 ```
 
 1. Choose the DLL that matches the architecture of **FAR.exe**. The build writes it to `out/x86/bin/Release/PanelTabsRedux.dll` or `out/x64/bin/Release/PanelTabsRedux.dll`.
-2. Copy the DLL into `%FARPROFILE%\Plugins\PanelTabsRedux\` or a subfolder of FAR's main `Plugins` directory. If you are upgrading, remove the installed `PanelTabsCpp.dll` when you install `PanelTabsRedux.dll`.
+2. Copy the DLL and both `.lng` files into `%FARPROFILE%\Plugins\PanelTabsRedux\` or a subfolder of FAR's main `Plugins` directory. If you are upgrading, remove the installed `PanelTabsCpp.dll` when you install `PanelTabsRedux.dll`.
 3. For hotkeys, copy `PanelTabs.lua` into `%FARPROFILE%\Macros\scripts\`. If LuaMacro uses a custom script path, use that path instead. Run `macro:load` in FAR after editing the script.
 4. Restart FAR and open the picker from **Alt+F1**, **Alt+F2**, or **F11**.
 
 FAR sets `FARPROFILE` inside its session. To see the active profile path, run `echo %FARPROFILE%` from FAR's command line. The DLL uses a separate plugin ID and the `ptabs:` prefix.
+
+## Languages
+
+The picker, dialogs, messages, and LuaMacro descriptions are available in English and Russian. The plugin follows FAR's interface language and falls back to English. After changing FAR's language, run `macro:load` to refresh the macro descriptions.
+
+To add a translation, copy `PanelTabsReduxEng.lng`, change the `.Language` header, and translate the quoted strings. Keep the message order, preserve the `%s` placeholder in the macro description, and save the file as UTF-8 with a BOM. Place it beside the DLL.
 
 ## Updates through Renewal
 

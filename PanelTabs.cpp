@@ -1,4 +1,5 @@
 #include <plugin.hpp>
+#include "PanelTabsMessages.hpp"
 #include <objbase.h>
 #include <wincrypt.h>
 
@@ -29,6 +30,8 @@ constexpr auto Title = L"Panel Tabs Redux";
 constexpr auto SettingsKey = L"TabListsV5";
 constexpr std::wstring_view ShortcutKeys = L"123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 constexpr std::size_t TabLimit = 999;
+
+const wchar_t* Msg(Message id);
 
 struct Cursor
 {
@@ -101,7 +104,7 @@ std::wstring LocationLabel(const Location& location)
         return location.path;
     const auto host = location.HasLocalHostFile()
         ? (HasTemporaryHostFile(location) ? std::filesystem::path(location.file).filename().wstring() : location.file)
-        : L"Plugin panel";
+        : Msg(Message::PluginPanel);
     return location.path.empty() ? host : host + L" :: " + location.path;
 }
 
@@ -126,6 +129,13 @@ std::array<TabList, 2> lists;
 bool dirty{};
 bool canSave = true;
 
+const wchar_t* Msg(Message id)
+{
+    const auto index = static_cast<intptr_t>(id);
+    const auto* message = api.GetMsg(&PluginId, index);
+    return message && *message ? message : EnglishMessages[index];
+}
+
 wchar_t ParseShortcut(std::wstring_view text)
 {
     if (text.size() != 1)
@@ -147,9 +157,9 @@ void AppendTab(TabList& list, Location location, Cursor cursor = {})
     dirty = true;
 }
 
-void Warn(const wchar_t* message, const wchar_t* detail = nullptr)
+void Warn(Message message, const wchar_t* detail = nullptr)
 {
-    const wchar_t* items[]{Title, message, detail};
+    const wchar_t* items[]{Title, Msg(message), detail};
     api.Message(&PluginId, &ErrorId, FMSG_WARNING | FMSG_MB_OK, nullptr, items, detail ? 3 : 2, 0);
 }
 
@@ -214,7 +224,7 @@ void Load()
     if (!data)
     {
         canSave = false;
-        Warn(L"FAR could not decrypt the saved tab lists for this Windows account.");
+        Warn(Message::DecryptFailed);
         return;
     }
 
@@ -285,14 +295,14 @@ void Save()
     auto data = output.str();
     if (data.size() > MAXDWORD / sizeof(wchar_t))
     {
-        Warn(L"The tab lists are too large to save.");
+        Warn(Message::TabListsTooLarge);
         return;
     }
     DATA_BLOB plaintext{static_cast<DWORD>(data.size() * sizeof(wchar_t)), reinterpret_cast<BYTE*>(data.data())};
     DATA_BLOB encrypted{};
     if (!CryptProtectData(&plaintext, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &encrypted))
     {
-        Warn(L"Windows could not encrypt the tab lists.");
+        Warn(Message::EncryptFailed);
         return;
     }
     const std::unique_ptr<BYTE, LocalFreeBuffer> bytes(encrypted.pbData);
@@ -306,7 +316,7 @@ void Save()
         api.SettingsControl(settings.handle, SCTL_SET, 0, &item))
         dirty = false;
     else
-        Warn(L"FAR could not save the tab lists to this profile.");
+        Warn(Message::SaveFailed);
 }
 
 PanelInfo FilePanel(HANDLE panel)
@@ -441,7 +451,7 @@ TabList* Sync(HANDLE panel)
         {
             if (list.tabs.size() == TabLimit)
             {
-                Warn(L"The panel's tab list is full. Open FAR in a saved tab's directory to manage it.");
+                Warn(Message::DetachedTabListFull);
                 return nullptr;
             }
             AppendTab(list, location);
@@ -466,7 +476,7 @@ bool CanAdd(const TabList& list)
 {
     if (list.tabs.size() < TabLimit)
         return true;
-    Warn(L"This panel has reached its tab limit.");
+    Warn(Message::TabLimitReached);
     return false;
 }
 
@@ -492,7 +502,7 @@ bool GoToLocation(HANDLE panel, TabList& list, const Location& current, const Lo
 {
     if (!CanOpenLocation(current, target))
     {
-        Warn(L"Open this location on the panel before selecting its tab.",
+        Warn(Message::RequiresLivePanel,
              LocationLabel(target).c_str());
         return false;
     }
@@ -511,12 +521,12 @@ bool GoToLocation(HANDLE panel, TabList& list, const Location& current, const Lo
         if (!CanOpenLocation(after, current) || (!current.livePanel && !OpenLocation(panel, current)))
         {
             list.attached = false;
-            Warn(L"Cannot open the tab or restore the previous location.", LocationLabel(target).c_str());
+            Warn(Message::OpenAndRestoreFailed, LocationLabel(target).c_str());
             return false;
         }
         RestoreCursor(panel, cursor);
     }
-    Warn(L"Cannot open the tab's location.", LocationLabel(target).c_str());
+    Warn(Message::OpenFailed, LocationLabel(target).c_str());
     return false;
 }
 
@@ -556,7 +566,7 @@ void Close(HANDLE panel, TabList& list, std::size_t index)
 {
     if (list.tabs.size() == 1)
     {
-        Warn(L"Keep at least one tab on each panel.");
+        Warn(Message::KeepOneTab);
         return;
     }
     if (index == list.active)
@@ -564,7 +574,7 @@ void Close(HANDLE panel, TabList& list, std::size_t index)
         const auto replacement = AdjacentTab(panel, list, index + 1 < list.tabs.size());
         if (!replacement)
         {
-            Warn(L"Open another tab before closing this one.");
+            Warn(Message::OpenAnotherTab);
             return;
         }
         if (!SwitchTo(panel, list, *replacement))
@@ -593,14 +603,14 @@ void MoveTab(TabList& list, std::size_t& highlight, bool down)
 std::optional<std::wstring> PromptForDirectory(const std::wstring& initialPath)
 {
     std::wstring path(32768, L'\0');
-    if (!api.InputBox(&PluginId, &NewTabId, L"New tab", L"Absolute directory path",
+    if (!api.InputBox(&PluginId, &NewTabId, Msg(Message::NewTab), Msg(Message::AbsolutePathPrompt),
                       nullptr, initialPath.c_str(), path.data(), path.size(), nullptr, FIB_BUTTONS | FIB_EDITPATH))
         return std::nullopt;
 
     path.resize(std::char_traits<wchar_t>::length(path.c_str()));
     if (!std::filesystem::path(path).is_absolute())
     {
-        Warn(L"Enter an absolute directory path.");
+        Warn(Message::InvalidAbsolutePath);
         return std::nullopt;
     }
     return path;
@@ -621,19 +631,19 @@ bool ShowTabEditor(const Location& location, TabEdit& edit)
     const auto pathFlags = location.livePanel ? DIF_DISABLE :
         DIF_SELECTONENTRY | (location.IsPlugin() ? DIF_NONE : DIF_EDITPATH);
     const FarDialogItem items[]{
-        {DI_DOUBLEBOX, 3, 1, 60, 10, 0, nullptr, nullptr, DIF_NONE, L"Edit tab"},
-        {DI_TEXT, 5, 3, 0, 3, 0, nullptr, nullptr, DIF_NONE, L"&Name"},
+        {DI_DOUBLEBOX, 3, 1, 60, 10, 0, nullptr, nullptr, DIF_NONE, Msg(Message::EditTab)},
+        {DI_TEXT, 5, 3, 0, 3, 0, nullptr, nullptr, DIF_NONE, Msg(Message::Name)},
         {DI_EDIT, 17, 3, 58, 3, 0, nullptr, nullptr, DIF_FOCUS | DIF_SELECTONENTRY, edit.name.c_str(), 127},
-        {DI_TEXT, 5, 4, 0, 4, 0, nullptr, nullptr, DIF_NONE, L"&Path"},
+        {DI_TEXT, 5, 4, 0, 4, 0, nullptr, nullptr, DIF_NONE, Msg(Message::Path)},
         {DI_EDIT, 17, 4, 58, 4, 0, nullptr, nullptr, pathFlags, edit.path.c_str(), 32767},
-        {DI_TEXT, 5, 5, 0, 5, 0, nullptr, nullptr, DIF_NONE, L"Short&cut"},
+        {DI_TEXT, 5, 5, 0, 5, 0, nullptr, nullptr, DIF_NONE, Msg(Message::Shortcut)},
         {DI_EDIT, 17, 5, 20, 5, 0, nullptr, nullptr, DIF_SELECTONENTRY, edit.shortcut.c_str(), 127},
-        {DI_TEXT, 23, 5, 0, 5, 0, nullptr, nullptr, DIF_NONE, L"1–9 or A–Z, blank clears"},
+        {DI_TEXT, 23, 5, 0, 5, 0, nullptr, nullptr, DIF_NONE, Msg(Message::ShortcutHint)},
         {DI_CHECKBOX, 5, 6, 0, 6, edit.pinned ? BSTATE_CHECKED : BSTATE_UNCHECKED,
-         nullptr, nullptr, DIF_NONE, L"P&inned"},
+         nullptr, nullptr, DIF_NONE, Msg(Message::Pinned)},
         {DI_TEXT, 0, 8, 0, 8, 0, nullptr, nullptr, DIF_SEPARATOR, L""},
-        {DI_BUTTON, 0, 9, 0, 9, 0, nullptr, nullptr, DIF_CENTERGROUP | DIF_DEFAULTBUTTON, L"&Save"},
-        {DI_BUTTON, 0, 9, 0, 9, 0, nullptr, nullptr, DIF_CENTERGROUP, L"Cancel"},
+        {DI_BUTTON, 0, 9, 0, 9, 0, nullptr, nullptr, DIF_CENTERGROUP | DIF_DEFAULTBUTTON, Msg(Message::Save)},
+        {DI_BUTTON, 0, 9, 0, 9, 0, nullptr, nullptr, DIF_CENTERGROUP, Msg(Message::Cancel)},
     };
     const auto handle = api.DialogInit(&PluginId, &EditTabId, -1, -1, 64, 12, nullptr,
                                       items, std::size(items), 0, FDLG_NONE, nullptr, nullptr);
@@ -660,9 +670,9 @@ bool ShowTabEditor(const Location& location, TabEdit& edit)
 bool ConfirmShortcutTransfer(const Tab& previous)
 {
     const auto assignedTo = previous.name.empty() ? LocationLabel(previous.location) : previous.name;
-    const auto detail = L"Currently assigned to " + assignedTo;
-    const wchar_t* items[]{L"Reassign shortcut", L"Move this shortcut to the edited tab?", detail.c_str(),
-                          L"&Cancel", L"&Use anyway"};
+    const auto detail = Msg(Message::AssignedTo) + assignedTo;
+    const wchar_t* items[]{Msg(Message::ReassignShortcut), Msg(Message::ReassignPrompt), detail.c_str(),
+                          Msg(Message::Cancel), Msg(Message::UseAnyway)};
     return api.Message(&PluginId, &ErrorId, FMSG_WARNING, nullptr, items, std::size(items), 2) == 1;
 }
 
@@ -675,13 +685,13 @@ void EditTab(HANDLE panel, TabList& list, std::size_t index)
         const auto shortcut = ParseShortcut(edit.shortcut);
         if (!edit.shortcut.empty() && !shortcut)
         {
-            Warn(L"Enter a single digit from 1 to 9 or a letter from A to Z.");
+            Warn(Message::InvalidShortcut);
             continue;
         }
         const auto pathChanged = edit.path != tab.location.path;
         if (pathChanged && !tab.location.IsPlugin() && !std::filesystem::path(edit.path).is_absolute())
         {
-            Warn(L"Enter an absolute directory path.");
+            Warn(Message::InvalidAbsolutePath);
             continue;
         }
         if (!pathChanged && tab.name == edit.name && tab.shortcut == shortcut && tab.pinned == edit.pinned)
@@ -750,9 +760,9 @@ void Pick(HANDLE panel, TabList* list)
                 label += L'-';
             label += L"  ";
             if (tab.pinned)
-                label += L"[Pinned] ";
+                label.append(Msg(Message::PinnedTag)).append(L" ");
             if (NeedsLivePanel(tab.location))
-                label += L"[Open only] ";
+                label.append(Msg(Message::OpenOnlyTag)).append(L" ");
             if (!tab.name.empty())
             {
                 AppendMenuText(label, tab.name);
@@ -767,8 +777,8 @@ void Pick(HANDLE panel, TabList* list)
         const bool left = list == &lists[0];
         intptr_t pressed = -1;
         const auto result = api.Menu(&PluginId, &MenuId, -1, -1, 0, FMENU_WRAPMODE,
-                                     left ? L"Left panel tabs" : L"Right panel tabs",
-                                     L"Ins New  Del Close  F3 Pin  F4 Edit  Ctrl+↑/↓ Move  Tab Other",
+                                     left ? Msg(Message::LeftPanelTabs) : Msg(Message::RightPanelTabs),
+                                     Msg(Message::PickerHelp),
                                      nullptr, keys, &pressed, items.data(), items.size());
         if (result < 0 || static_cast<std::size_t>(result) >= items.size())
             return;
@@ -806,7 +816,7 @@ void Pick(HANDLE panel, TabList* list)
                 highlight = list->active;
             }
             else
-                Warn(L"The other panel must be a visible file or plugin panel.");
+                Warn(Message::OtherPanelUnavailable);
             break;
         }
         case 3:
@@ -843,14 +853,14 @@ void Dispatch(std::wstring_view command, HANDLE panel)
     if (!command.empty() && command != L"list" && command != L"new" &&
         command != L"close" && command != L"next" && command != L"prev" && !shortcut)
     {
-        Warn(L"Use ptabs: with list, new, close, next, prev, or a tab shortcut (1–9 or A–Z).");
+        Warn(Message::CommandHelp);
         return;
     }
 
     auto* list = Sync(panel);
     if (!list)
     {
-        Warn(L"Panel tabs need a visible file or plugin panel.");
+        Warn(Message::PanelUnavailable);
         return;
     }
     if (command.empty() || command == L"list")
@@ -921,7 +931,7 @@ void WINAPI SetStartupInfoW(const PluginStartupInfo* info)
     }
     catch (...)
     {
-        Warn(L"FAR could not read the saved tab lists.");
+        Warn(Message::ReadFailed);
     }
 }
 
@@ -966,7 +976,7 @@ HANDLE WINAPI OpenW(const OpenInfo* info)
     }
     catch (...)
     {
-        Warn(L"Could not complete the tab operation.");
+        Warn(Message::OperationFailed);
     }
     return nullptr;
 }
