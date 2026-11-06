@@ -22,7 +22,8 @@ constexpr GUID RenameId{0x3bba88e6, 0x1048, 0x4832, {0x9c, 0x54, 0x3b, 0xc7, 0xd
 constexpr GUID EditPathId{0x52df1904, 0x42ad, 0x431e, {0xa1, 0x57, 0x82, 0x3a, 0x28, 0x7f, 0xa7, 0x61}};
 constexpr GUID ErrorId{0x821e68d3, 0x31ea, 0x4901, {0x8b, 0xc0, 0x41, 0x70, 0xf2, 0x2a, 0x23, 0xd8}};
 constexpr auto Title = L"Panel Tabs Redux";
-constexpr auto SettingsKey = L"TabListsV1";
+constexpr auto SettingsKey = L"TabListsV2";
+constexpr auto LegacySettingsKey = L"TabListsV1";
 constexpr std::size_t TabLimit = 999;
 
 struct Cursor
@@ -37,6 +38,7 @@ struct Tab
     std::wstring path;
     std::wstring name;
     Cursor cursor;
+    bool pinned{};
 };
 
 struct TabList
@@ -81,12 +83,21 @@ public:
 void Load()
 {
     const Settings settings;
+    if (settings.handle == INVALID_HANDLE_VALUE)
+        return;
+
     FarSettingsItem item{};
     item.StructSize = sizeof(item);
     item.Name = SettingsKey;
     item.Type = FST_STRING;
-    if (settings.handle == INVALID_HANDLE_VALUE ||
-        !api.SettingsControl(settings.handle, SCTL_GET, 0, &item) || !item.String)
+    const bool hasPins = api.SettingsControl(settings.handle, SCTL_GET, 0, &item) != 0;
+    if (!hasPins)
+    {
+        item.Name = LegacySettingsKey;
+        if (!api.SettingsControl(settings.handle, SCTL_GET, 0, &item))
+            return;
+    }
+    if (!item.String)
         return;
 
     std::wistringstream input(item.String);
@@ -100,8 +111,12 @@ void Load()
 
         list.tabs.resize(count);
         for (auto& tab : list.tabs)
+        {
             if (!(input >> std::quoted(tab.path) >> std::quoted(tab.name)) || tab.path.empty())
                 return;
+            if (hasPins && !(input >> tab.pinned))
+                return;
+        }
     }
     if (input >> std::ws && input.eof())
         lists = std::move(loaded);
@@ -117,7 +132,7 @@ void Save()
     {
         output << list.tabs.size() << L' ' << list.active << L'\n';
         for (const auto& tab : list.tabs)
-            output << std::quoted(tab.path) << L' ' << std::quoted(tab.name) << L'\n';
+            output << std::quoted(tab.path) << L' ' << std::quoted(tab.name) << L' ' << tab.pinned << L'\n';
     }
 
     const auto data = output.str();
@@ -228,40 +243,38 @@ TabList* Sync(HANDLE panel)
         return nullptr;
 
     auto& list = lists[(info.Flags & PFLAGS_PANELLEFT) ? 0 : 1];
-    auto cursor = ReadCursor(panel, info);
-    if (!list.attached)
+    // FAR chooses the initial directories. Preserve saved tabs when it starts elsewhere.
+    if (!list.attached && (list.tabs.empty() || list.tabs[list.active].path != path))
     {
-        // FAR chooses the initial directories. Preserve saved tabs when it starts elsewhere.
-        if (list.tabs.empty() || list.tabs[list.active].path != path)
+        const auto match = std::ranges::find(list.tabs, path, &Tab::path);
+        if (match != list.tabs.end())
         {
-            const auto match = std::ranges::find(list.tabs, path, &Tab::path);
-            if (match != list.tabs.end())
-                list.active = static_cast<std::size_t>(match - list.tabs.begin());
-            else
-            {
-                if (list.tabs.size() == TabLimit)
-                {
-                    Warn(L"The panel's tab list is full. Open FAR in a saved tab's directory to manage it.");
-                    return nullptr;
-                }
-                list.tabs.push_back({std::move(path), {}, std::move(cursor)});
-                list.active = list.tabs.size() - 1;
-                list.attached = true;
-                dirty = true;
-                return &list;
-            }
+            list.active = static_cast<std::size_t>(match - list.tabs.begin());
             dirty = true;
         }
-        list.attached = true;
+        else if (list.tabs.empty() || !list.tabs[list.active].pinned)
+        {
+            if (list.tabs.size() == TabLimit)
+            {
+                Warn(L"The panel's tab list is full. Open FAR in a saved tab's directory to manage it.");
+                return nullptr;
+            }
+            list.tabs.push_back({path, {}, {}});
+            list.active = list.tabs.size() - 1;
+            dirty = true;
+        }
     }
+    list.attached = true;
 
     auto& tab = list.tabs[list.active];
+    if (tab.pinned && tab.path != path)
+        return &list;
     if (tab.path != path)
     {
         tab.path = std::move(path);
         dirty = true;
     }
-    tab.cursor = std::move(cursor);
+    tab.cursor = ReadCursor(panel, info);
     return &list;
 }
 
@@ -273,12 +286,14 @@ bool CanAdd(const TabList& list)
     return false;
 }
 
-void Add(TabList& list)
+void Add(HANDLE panel, TabList& list)
 {
     if (!CanAdd(list))
         return;
-    const auto& current = list.tabs[list.active];
-    list.tabs.push_back({current.path, {}, current.cursor});
+    auto path = CurrentPath(panel);
+    if (path.empty())
+        return;
+    list.tabs.push_back({std::move(path), {}, ReadCursor(panel, FilePanel(panel))});
     list.active = list.tabs.size() - 1;
     dirty = true;
 }
@@ -294,14 +309,19 @@ bool GoToDirectory(HANDLE panel, const std::wstring& path)
 
 bool SwitchTo(HANDLE panel, TabList& list, std::size_t index)
 {
-    if (index == list.active)
-        return true;
+    const auto& current = list.tabs[list.active];
+    const auto currentPath = current.pinned ? CurrentPath(panel) : current.path;
     const auto& tab = list.tabs[index];
-    if (tab.path != list.tabs[list.active].path && !GoToDirectory(panel, tab.path))
+    if (index == list.active && currentPath == tab.path)
+        return true;
+    if (tab.path != currentPath && !GoToDirectory(panel, tab.path))
         return false;
     RestoreCursor(panel, tab.cursor);
-    list.active = index;
-    dirty = true;
+    if (list.active != index)
+    {
+        list.active = index;
+        dirty = true;
+    }
     return true;
 }
 
@@ -378,7 +398,8 @@ void AppendMenuText(std::wstring& line, std::wstring_view text)
 
 void Pick(HANDLE panel, TabList* list)
 {
-    constexpr FarKey keys[]{{VK_INSERT, 0}, {VK_DELETE, 0}, {VK_F2, 0}, {VK_TAB, 0}, {VK_F4, 0}, {}};
+    constexpr FarKey keys[]{{VK_INSERT, 0}, {VK_DELETE, 0}, {VK_F2, 0}, {VK_TAB, 0},
+                            {VK_F4, 0}, {VK_F3, 0}, {}};
     auto highlight = list->active;
     for (;;)
     {
@@ -391,6 +412,8 @@ void Pick(HANDLE panel, TabList* list)
             if (i < 9)
                 label += L'&';
             label += std::to_wstring(i + 1) + L"  ";
+            if (tab.pinned)
+                label += L"[Pinned] ";
             if (!tab.name.empty())
             {
                 AppendMenuText(label, tab.name);
@@ -406,7 +429,7 @@ void Pick(HANDLE panel, TabList* list)
         intptr_t pressed = -1;
         const auto result = api.Menu(&PluginId, &MenuId, -1, -1, 0, FMENU_WRAPMODE,
                                      left ? L"Left panel tabs" : L"Right panel tabs",
-                                     L"Ins New   Del Close   F2 Rename   F4 Edit path   Tab Other panel",
+                                     L"Ins New  Del Close  F2 Rename  F3 Pin  F4 Edit path  Tab Other panel",
                                      nullptr, keys, &pressed, items.data(), items.size());
         if (result < 0 || static_cast<std::size_t>(result) >= items.size())
             return;
@@ -416,7 +439,7 @@ void Pick(HANDLE panel, TabList* list)
         case 0:
             if (CanAdd(*list))
             {
-                auto path = PromptForDirectory(L"New tab", list->tabs[list->active].path);
+                auto path = PromptForDirectory(L"New tab", CurrentPath(panel));
                 if (!path.empty())
                 {
                     list->tabs.push_back({std::move(path), {}, {}});
@@ -448,6 +471,15 @@ void Pick(HANDLE panel, TabList* list)
         case 4:
             EditPath(panel, *list, highlight);
             break;
+        case 5:
+        {
+            auto& tab = list->tabs[highlight];
+            tab.pinned = !tab.pinned;
+            dirty = true;
+            if (!tab.pinned && highlight == list->active)
+                Sync(panel);
+            break;
+        }
         default:
             if (SwitchTo(panel, *list, highlight))
                 return;
@@ -480,7 +512,7 @@ void Dispatch(std::wstring_view command, HANDLE panel)
     if (command.empty() || command == L"list")
         Pick(panel, list);
     else if (command == L"new")
-        Add(*list);
+        Add(panel, *list);
     else if (command == L"close")
         Close(panel, *list, list->active);
     else if (command == L"next")
