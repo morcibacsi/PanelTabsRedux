@@ -4,7 +4,7 @@ local function bind(key, command, description)
   Macro {
     area = "Shell";
     key = key;
-    flags = "EmptyCommandLine EnableOutput NoPluginPanels";
+    flags = "EmptyCommandLine EnableOutput";
     description = "Panel Tabs Redux: " .. description;
     condition = function()
       return APanel.Visible and Plugin.Exist(plugin)

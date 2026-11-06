@@ -1,12 +1,16 @@
 #include <plugin.hpp>
+#include <objbase.h>
+#include <wincrypt.h>
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <memory>
 #include <new>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -22,8 +26,7 @@ constexpr GUID RenameId{0x3bba88e6, 0x1048, 0x4832, {0x9c, 0x54, 0x3b, 0xc7, 0xd
 constexpr GUID EditPathId{0x52df1904, 0x42ad, 0x431e, {0xa1, 0x57, 0x82, 0x3a, 0x28, 0x7f, 0xa7, 0x61}};
 constexpr GUID ErrorId{0x821e68d3, 0x31ea, 0x4901, {0x8b, 0xc0, 0x41, 0x70, 0xf2, 0x2a, 0x23, 0xd8}};
 constexpr auto Title = L"Panel Tabs Redux";
-constexpr auto SettingsKey = L"TabListsV2";
-constexpr auto LegacySettingsKey = L"TabListsV1";
+constexpr auto SettingsKey = L"TabListsV4";
 constexpr std::size_t TabLimit = 999;
 
 struct Cursor
@@ -33,9 +36,77 @@ struct Cursor
     std::size_t offset{};
 };
 
-struct Tab
+struct Location
 {
     std::wstring path;
+    GUID plugin = FarGuid;
+    std::wstring file;
+    std::wstring param;
+    HANDLE livePanel{};
+
+    bool IsPlugin() const { return plugin != FarGuid; }
+    bool HasLocalHostFile() const { return IsPlugin() && std::filesystem::path(file).is_absolute(); }
+    bool Valid() const { return IsPlugin() || !path.empty(); }
+    bool SamePluginPanel(const Location& other) const
+    {
+        return IsPlugin() && plugin == other.plugin && livePanel == other.livePanel &&
+               (livePanel || (file == other.file && param == other.param));
+    }
+    bool operator==(const Location&) const = default;
+};
+
+bool HasTemporaryHostFile(const Location& location)
+{
+    if (!location.HasLocalHostFile())
+        return false;
+
+    // FAR extracts nested archives into directories named FAR<hex>.tmp under the Windows temp path.
+    wchar_t tempPath[MAX_PATH + 1]{};
+    const auto length = GetTempPathW(static_cast<DWORD>(std::size(tempPath)), tempPath);
+    if (!length || length >= std::size(tempPath))
+        return false;
+    const auto host = std::filesystem::path(location.file).lexically_normal().make_preferred().native();
+    const auto prefix = std::filesystem::path(tempPath).lexically_normal().make_preferred().native();
+    if (host.size() <= prefix.size() ||
+        CompareStringOrdinal(host.data(), static_cast<int>(prefix.size()), prefix.data(),
+                             static_cast<int>(prefix.size()), TRUE) != CSTR_EQUAL)
+        return false;
+
+    const std::wstring_view relative(host.data() + prefix.size(), host.size() - prefix.size());
+    const auto slash = relative.find(L'\\');
+    if (slash == relative.npos)
+        return false;
+    const auto folder = relative.substr(0, slash);
+    if (folder.size() < 8 || folder.size() > 15 ||
+        CompareStringOrdinal(folder.data(), 3, L"FAR", 3, TRUE) != CSTR_EQUAL ||
+        CompareStringOrdinal(folder.data() + folder.size() - 4, 4, L".tmp", 4, TRUE) != CSTR_EQUAL)
+        return false;
+    return folder.substr(3, folder.size() - 7).find_first_not_of(L"0123456789abcdefABCDEF") == folder.npos;
+}
+
+bool NeedsLivePanel(const Location& location)
+{
+    return location.livePanel || HasTemporaryHostFile(location);
+}
+
+bool CanOpenLocation(const Location& current, const Location& target)
+{
+    return !NeedsLivePanel(target) || target.SamePluginPanel(current);
+}
+
+std::wstring LocationLabel(const Location& location)
+{
+    if (!location.IsPlugin())
+        return location.path;
+    const auto host = location.HasLocalHostFile()
+        ? (HasTemporaryHostFile(location) ? std::filesystem::path(location.file).filename().wstring() : location.file)
+        : L"Plugin panel";
+    return location.path.empty() ? host : host + L" :: " + location.path;
+}
+
+struct Tab
+{
+    Location location;
     std::wstring name;
     Cursor cursor;
     bool pinned{};
@@ -51,6 +122,7 @@ struct TabList
 PluginStartupInfo api{};
 std::array<TabList, 2> lists;
 bool dirty{};
+bool canSave = true;
 
 void Warn(const wchar_t* message, const wchar_t* detail = nullptr)
 {
@@ -80,6 +152,28 @@ public:
     HANDLE handle = INVALID_HANDLE_VALUE;
 };
 
+struct LocalFreeBuffer
+{
+    void operator()(BYTE* data) const { LocalFree(data); }
+};
+
+std::optional<std::wstring> DecryptSettings(const FarSettingsItem& item)
+{
+    if (!item.Data.Data || !item.Data.Size || item.Data.Size > MAXDWORD)
+        return std::nullopt;
+    DATA_BLOB input{static_cast<DWORD>(item.Data.Size),
+                    const_cast<BYTE*>(static_cast<const BYTE*>(item.Data.Data))};
+    DATA_BLOB output{};
+    if (!CryptUnprotectData(&input, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output))
+        return std::nullopt;
+    const std::unique_ptr<BYTE, LocalFreeBuffer> bytes(output.pbData);
+    if (!output.cbData || output.cbData % sizeof(wchar_t))
+        return std::nullopt;
+    std::wstring result(output.cbData / sizeof(wchar_t), L'\0');
+    std::memcpy(result.data(), bytes.get(), output.cbData);
+    return result;
+}
+
 void Load()
 {
     const Settings settings;
@@ -89,18 +183,19 @@ void Load()
     FarSettingsItem item{};
     item.StructSize = sizeof(item);
     item.Name = SettingsKey;
-    item.Type = FST_STRING;
-    const bool hasPins = api.SettingsControl(settings.handle, SCTL_GET, 0, &item) != 0;
-    if (!hasPins)
-    {
-        item.Name = LegacySettingsKey;
-        if (!api.SettingsControl(settings.handle, SCTL_GET, 0, &item))
-            return;
-    }
-    if (!item.String)
+    item.Type = FST_DATA;
+    if (!api.SettingsControl(settings.handle, SCTL_GET, 0, &item))
         return;
 
-    std::wistringstream input(item.String);
+    auto data = DecryptSettings(item);
+    if (!data)
+    {
+        canSave = false;
+        Warn(L"FAR could not decrypt the saved tab lists for this Windows account.");
+        return;
+    }
+
+    std::wistringstream input(std::move(*data));
     std::array<TabList, 2> loaded;
     for (auto& list : loaded)
     {
@@ -112,9 +207,11 @@ void Load()
         list.tabs.resize(count);
         for (auto& tab : list.tabs)
         {
-            if (!(input >> std::quoted(tab.path) >> std::quoted(tab.name)) || tab.path.empty())
-                return;
-            if (hasPins && !(input >> tab.pinned))
+            auto& location = tab.location;
+            std::wstring guid;
+            if (!(input >> std::quoted(location.path) >> std::quoted(tab.name) >> tab.pinned
+                        >> std::quoted(guid) >> std::quoted(location.file) >> std::quoted(location.param)) ||
+                FAILED(IIDFromString(guid.c_str(), &location.plugin)) || !location.Valid())
                 return;
         }
     }
@@ -124,24 +221,54 @@ void Load()
 
 void Save()
 {
-    if (!dirty)
+    if (!dirty || !canSave)
         return;
 
     std::wostringstream output;
     for (const auto& list : lists)
     {
-        output << list.tabs.size() << L' ' << list.active << L'\n';
-        for (const auto& tab : list.tabs)
-            output << std::quoted(tab.path) << L' ' << std::quoted(tab.name) << L' ' << tab.pinned << L'\n';
+        std::size_t count{};
+        std::size_t active{};
+        std::wostringstream entries;
+        for (std::size_t i = 0; i < list.tabs.size(); ++i)
+        {
+            const auto& tab = list.tabs[i];
+            const auto& location = tab.location;
+            if (NeedsLivePanel(location))
+                continue;
+            ++count;
+            if (i < list.active)
+                ++active;
+            wchar_t guid[39]{};
+            StringFromGUID2(location.plugin, guid, static_cast<int>(std::size(guid)));
+            entries << std::quoted(location.path) << L' ' << std::quoted(tab.name) << L' ' << tab.pinned
+                    << L' ' << std::quoted(guid) << L' ' << std::quoted(location.file)
+                    << L' ' << std::quoted(location.param) << L'\n';
+        }
+        output << count << L' ' << (count ? std::min(active, count - 1) : 0) << L'\n' << entries.str();
     }
 
-    const auto data = output.str();
+    // FAR shortcut data is opaque and may contain credentials.
+    auto data = output.str();
+    if (data.size() > MAXDWORD / sizeof(wchar_t))
+    {
+        Warn(L"The tab lists are too large to save.");
+        return;
+    }
+    DATA_BLOB plaintext{static_cast<DWORD>(data.size() * sizeof(wchar_t)), reinterpret_cast<BYTE*>(data.data())};
+    DATA_BLOB encrypted{};
+    if (!CryptProtectData(&plaintext, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &encrypted))
+    {
+        Warn(L"Windows could not encrypt the tab lists.");
+        return;
+    }
+    const std::unique_ptr<BYTE, LocalFreeBuffer> bytes(encrypted.pbData);
     const Settings settings;
     FarSettingsItem item{};
     item.StructSize = sizeof(item);
     item.Name = SettingsKey;
-    item.Type = FST_STRING;
-    item.String = data.c_str();
+    item.Type = FST_DATA;
+    item.Data = {encrypted.cbData, bytes.get()};
     if (settings.handle != INVALID_HANDLE_VALUE &&
         api.SettingsControl(settings.handle, SCTL_SET, 0, &item))
         dirty = false;
@@ -154,7 +281,7 @@ PanelInfo FilePanel(HANDLE panel)
     PanelInfo info{};
     info.StructSize = sizeof(info);
     if (!api.PanelControl(panel, FCTL_GETPANELINFO, 0, &info) ||
-        info.PanelType != PTYPE_FILEPANEL || (info.Flags & PFLAGS_PLUGIN) ||
+        info.PanelType != PTYPE_FILEPANEL ||
         !(info.Flags & PFLAGS_VISIBLE))
         return {};
     return info;
@@ -179,8 +306,10 @@ private:
     std::size_t capacity{};
 };
 
-std::wstring CurrentPath(HANDLE panel)
+Location ReadLocation(HANDLE panel, const PanelInfo& info)
 {
+    if (!info.StructSize)
+        return {};
     const auto bytes = api.PanelControl(panel, FCTL_GETPANELDIRECTORY, 0, nullptr);
     if (bytes < static_cast<intptr_t>(sizeof(FarPanelDirectory)))
         return {};
@@ -188,7 +317,22 @@ std::wstring CurrentPath(HANDLE panel)
     auto* directory = ::new (buffer.Get(static_cast<std::size_t>(bytes))) FarPanelDirectory{};
     directory->StructSize = sizeof(*directory);
     const auto written = api.PanelControl(panel, FCTL_GETPANELDIRECTORY, bytes, directory);
-    return written > 0 && written <= bytes && directory->Name ? directory->Name : L"";
+    if (written <= 0 || written > bytes)
+        return {};
+    Location location{
+        directory->Name ? directory->Name : L"",
+        directory->PluginId,
+        directory->File ? directory->File : L"",
+        directory->Param ? directory->Param : L""
+    };
+    if (location.IsPlugin() && !(info.Flags & PFLAGS_SHORTCUT))
+        location.livePanel = info.PluginHandle;
+    return location;
+}
+
+Location CurrentLocation(HANDLE panel)
+{
+    return ReadLocation(panel, FilePanel(panel));
 }
 
 std::wstring_view ItemName(HANDLE panel, std::size_t index, PanelBuffer& buffer)
@@ -238,15 +382,23 @@ TabList* Sync(HANDLE panel)
     const auto info = FilePanel(panel);
     if (!info.StructSize)
         return nullptr;
-    auto path = CurrentPath(panel);
-    if (path.empty())
+    auto location = ReadLocation(panel, info);
+    if (!location.Valid())
         return nullptr;
 
     auto& list = lists[(info.Flags & PFLAGS_PANELLEFT) ? 0 : 1];
-    // FAR chooses the initial directories. Preserve saved tabs when it starts elsewhere.
-    if (!list.attached && (list.tabs.empty() || list.tabs[list.active].path != path))
+    if (NeedsLivePanel(location) && !list.tabs.empty() &&
+        !list.tabs[list.active].location.SamePluginPanel(location))
     {
-        const auto match = std::ranges::find(list.tabs, path, &Tab::path);
+        // Browsing a session-only panel must not replace an existing saved destination.
+        list.attached = true;
+        return &list;
+    }
+
+    // FAR chooses the initial directories. Preserve saved tabs when it starts elsewhere.
+    if (!list.attached && (list.tabs.empty() || list.tabs[list.active].location != location))
+    {
+        const auto match = std::ranges::find(list.tabs, location, &Tab::location);
         if (match != list.tabs.end())
         {
             list.active = static_cast<std::size_t>(match - list.tabs.begin());
@@ -259,7 +411,7 @@ TabList* Sync(HANDLE panel)
                 Warn(L"The panel's tab list is full. Open FAR in a saved tab's directory to manage it.");
                 return nullptr;
             }
-            list.tabs.push_back({path, {}, {}});
+            list.tabs.push_back({location, {}, {}});
             list.active = list.tabs.size() - 1;
             dirty = true;
         }
@@ -267,11 +419,11 @@ TabList* Sync(HANDLE panel)
     list.attached = true;
 
     auto& tab = list.tabs[list.active];
-    if (tab.pinned && tab.path != path)
+    if (tab.pinned && tab.location != location)
         return &list;
-    if (tab.path != path)
+    if (tab.location != location)
     {
-        tab.path = std::move(path);
+        tab.location = std::move(location);
         dirty = true;
     }
     tab.cursor = ReadCursor(panel, info);
@@ -290,31 +442,60 @@ void Add(HANDLE panel, TabList& list)
 {
     if (!CanAdd(list))
         return;
-    auto path = CurrentPath(panel);
-    if (path.empty())
+    auto location = CurrentLocation(panel);
+    if (!location.Valid())
         return;
-    list.tabs.push_back({std::move(path), {}, ReadCursor(panel, FilePanel(panel))});
+    list.tabs.push_back({std::move(location), {}, ReadCursor(panel, FilePanel(panel))});
     list.active = list.tabs.size() - 1;
     dirty = true;
 }
 
-bool GoToDirectory(HANDLE panel, const std::wstring& path)
+bool OpenLocation(HANDLE panel, const Location& location)
 {
-    FarPanelDirectory target{sizeof(target), path.c_str(), nullptr, FarGuid, nullptr};
-    if (api.PanelControl(panel, FCTL_SETPANELDIRECTORY, 0, &target))
+    FarPanelDirectory target{sizeof(target), location.path.c_str(), location.param.c_str(),
+                             location.plugin, location.file.c_str()};
+    return api.PanelControl(panel, FCTL_SETPANELDIRECTORY, 0, &target) != 0;
+}
+
+bool GoToLocation(HANDLE panel, TabList& list, const Location& current, const Location& target)
+{
+    if (!CanOpenLocation(current, target))
+    {
+        Warn(L"Open this location on the panel before selecting its tab.",
+             LocationLabel(target).c_str());
+        return false;
+    }
+    // A panel without a shortcut can restore its cursor only. SetDirectory can close it.
+    if (target.livePanel)
         return true;
-    Warn(L"Cannot open the tab's directory.", path.c_str());
+
+    const auto cursor = ReadCursor(panel, FilePanel(panel));
+    if (OpenLocation(panel, target))
+        return true;
+
+    // FAR can change the panel while trying to open a plugin shortcut.
+    const auto after = CurrentLocation(panel);
+    if (after != current)
+    {
+        if (!CanOpenLocation(after, current) || (!current.livePanel && !OpenLocation(panel, current)))
+        {
+            list.attached = false;
+            Warn(L"Cannot open the tab or restore the previous location.", LocationLabel(target).c_str());
+            return false;
+        }
+        RestoreCursor(panel, cursor);
+    }
+    Warn(L"Cannot open the tab's location.", LocationLabel(target).c_str());
     return false;
 }
 
 bool SwitchTo(HANDLE panel, TabList& list, std::size_t index)
 {
-    const auto& current = list.tabs[list.active];
-    const auto currentPath = current.pinned ? CurrentPath(panel) : current.path;
+    const auto currentLocation = CurrentLocation(panel);
     const auto& tab = list.tabs[index];
-    if (index == list.active && currentPath == tab.path)
+    if (index == list.active && currentLocation == tab.location)
         return true;
-    if (tab.path != currentPath && !GoToDirectory(panel, tab.path))
+    if (tab.location != currentLocation && !GoToLocation(panel, list, currentLocation, tab.location))
         return false;
     RestoreCursor(panel, tab.cursor);
     if (list.active != index)
@@ -323,6 +504,21 @@ bool SwitchTo(HANDLE panel, TabList& list, std::size_t index)
         dirty = true;
     }
     return true;
+}
+
+std::optional<std::size_t> AdjacentTab(HANDLE panel, const TabList& list, bool forward)
+{
+    const auto current = CurrentLocation(panel);
+    const auto count = list.tabs.size();
+    const auto step = forward ? 1 : count - 1;
+    auto index = list.active;
+    for (std::size_t offset = 1; offset < count; ++offset)
+    {
+        index = (index + step) % count;
+        if (CanOpenLocation(current, list.tabs[index].location))
+            return index;
+    }
+    return std::nullopt;
 }
 
 void Close(HANDLE panel, TabList& list, std::size_t index)
@@ -334,8 +530,13 @@ void Close(HANDLE panel, TabList& list, std::size_t index)
     }
     if (index == list.active)
     {
-        const auto replacement = index + 1 < list.tabs.size() ? index + 1 : index - 1;
-        if (!SwitchTo(panel, list, replacement))
+        const auto replacement = AdjacentTab(panel, list, index + 1 < list.tabs.size());
+        if (!replacement)
+        {
+            Warn(L"Open another tab before closing this one.");
+            return;
+        }
+        if (!SwitchTo(panel, list, *replacement))
             return;
     }
     list.tabs.erase(list.tabs.begin() + static_cast<std::ptrdiff_t>(index));
@@ -356,18 +557,21 @@ void Rename(Tab& tab)
     }
 }
 
-std::wstring PromptForDirectory(const wchar_t* title, const std::wstring& initialPath)
+std::optional<std::wstring> PromptForDirectory(const wchar_t* title, const Location& location)
 {
+    const auto plugin = location.IsPlugin();
+    const auto prompt = plugin ? L"Directory on the plugin panel" : L"Absolute directory path";
     std::wstring path(32768, L'\0');
-    if (!api.InputBox(&PluginId, &EditPathId, title, L"Absolute directory path", nullptr,
-                      initialPath.c_str(), path.data(), path.size(), nullptr, FIB_BUTTONS | FIB_EDITPATH))
-        return {};
+    if (!api.InputBox(&PluginId, &EditPathId, title, prompt,
+                      nullptr, location.path.c_str(), path.data(), path.size(), nullptr,
+                      FIB_BUTTONS | (plugin ? FIB_ENABLEEMPTY : FIB_EDITPATH)))
+        return std::nullopt;
 
     path.resize(std::char_traits<wchar_t>::length(path.c_str()));
-    if (!std::filesystem::path(path).is_absolute())
+    if (!plugin && !std::filesystem::path(path).is_absolute())
     {
         Warn(L"Enter an absolute directory path.");
-        return {};
+        return std::nullopt;
     }
     return path;
 }
@@ -375,13 +579,24 @@ std::wstring PromptForDirectory(const wchar_t* title, const std::wstring& initia
 void EditPath(HANDLE panel, TabList& list, std::size_t index)
 {
     auto& tab = list.tabs[index];
-    auto path = PromptForDirectory(L"Edit tab directory", tab.path);
-    if (path.empty() || path == tab.path)
+    if (tab.location.livePanel)
+    {
+        Warn(L"This panel does not provide a folder shortcut.");
         return;
-    if (index == list.active && !GoToDirectory(panel, path))
+    }
+    auto path = PromptForDirectory(L"Edit tab directory", tab.location);
+    if (!path || *path == tab.location.path)
         return;
+    auto target = tab.location;
+    target.path = std::move(*path);
+    if (index == list.active)
+    {
+        const auto current = CurrentLocation(panel);
+        if (target != current && !GoToLocation(panel, list, current, target))
+            return;
+    }
 
-    tab.path = std::move(path);
+    tab.location = std::move(target);
     tab.cursor = {};
     dirty = true;
 }
@@ -414,12 +629,14 @@ void Pick(HANDLE panel, TabList* list)
             label += std::to_wstring(i + 1) + L"  ";
             if (tab.pinned)
                 label += L"[Pinned] ";
+            if (NeedsLivePanel(tab.location))
+                label += L"[Open only] ";
             if (!tab.name.empty())
             {
                 AppendMenuText(label, tab.name);
                 label += L"  |  ";
             }
-            AppendMenuText(label, tab.path);
+            AppendMenuText(label, LocationLabel(tab.location));
             items[i].Text = label.c_str();
             items[i].Flags = (i == list->active ? MIF_CHECKED : MIF_NONE) |
                              (i == highlight ? MIF_SELECTED : MIF_NONE);
@@ -439,13 +656,19 @@ void Pick(HANDLE panel, TabList* list)
         case 0:
             if (CanAdd(*list))
             {
-                auto path = PromptForDirectory(L"New tab", CurrentPath(panel));
-                if (!path.empty())
+                auto location = CurrentLocation(panel);
+                if (location.livePanel)
+                    location = {};
+                if (!location.IsPlugin())
                 {
-                    list->tabs.push_back({std::move(path), {}, {}});
-                    highlight = list->tabs.size() - 1;
-                    dirty = true;
+                    auto path = PromptForDirectory(L"New tab", location);
+                    if (!path)
+                        break;
+                    location.path = std::move(*path);
                 }
+                list->tabs.push_back({std::move(location), {}, {}});
+                highlight = list->tabs.size() - 1;
+                dirty = true;
             }
             break;
         case 1:
@@ -465,7 +688,7 @@ void Pick(HANDLE panel, TabList* list)
                 highlight = list->active;
             }
             else
-                Warn(L"The other panel must be a visible filesystem panel.");
+                Warn(L"The other panel must be a visible file or plugin panel.");
             break;
         }
         case 4:
@@ -505,7 +728,7 @@ void Dispatch(std::wstring_view command, HANDLE panel)
     auto* list = Sync(panel);
     if (!list)
     {
-        Warn(L"A visible filesystem panel is required.");
+        Warn(L"Panel tabs need a visible file or plugin panel.");
         return;
     }
     const auto count = list->tabs.size();
@@ -515,10 +738,8 @@ void Dispatch(std::wstring_view command, HANDLE panel)
         Add(panel, *list);
     else if (command == L"close")
         Close(panel, *list, list->active);
-    else if (command == L"next")
-        SwitchTo(panel, *list, (list->active + 1) % count);
-    else if (command == L"prev")
-        SwitchTo(panel, *list, (list->active + count - 1) % count);
+    else if (command == L"next" || command == L"prev")
+        SwitchTo(panel, *list, AdjacentTab(panel, *list, command == L"next").value_or(list->active));
     else
     {
         const auto index = static_cast<std::size_t>(command.front() - L'1');
@@ -539,7 +760,7 @@ void WINAPI GetGlobalInfoW(GlobalInfo* info)
         PANELTABS_VERSION_MAJOR, PANELTABS_VERSION_MINOR, PANELTABS_VERSION_PATCH, 0, VS_RELEASE);
     info->Guid = PluginId;
     info->Title = Title;
-    info->Description = L"Keyboard-driven directory tabs for FAR's file panels";
+    info->Description = L"Keyboard-driven tabs for FAR file and plugin panels";
     info->Author = L"Panel Tabs Redux contributors";
 }
 

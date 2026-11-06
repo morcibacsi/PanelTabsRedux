@@ -2,7 +2,7 @@
 
 Panel Tabs Redux is a C++ reimplementation of the Delphi FarTabs plugin for FAR Manager 3.0 build 6666 or newer. The left and right filesystem panels each have their own list of tabs. An unpinned tab follows the directory as you browse. Tabs remember the cursor position when you switch away during the session. Tab commands save directory paths, custom names, and pin states to FAR's profile.
 
-The picker uses FAR's native menu and input boxes. The always-visible strip in the Delphi plugin uses a console overlay, so this version puts the tab list in the picker. This version handles filesystem directories. Archive panels, other plugin panels, and Delphi settings are outside its scope.
+The picker uses FAR's native menu and input boxes. The always-visible strip in the Delphi plugin uses a console overlay, so this version puts the tab list in the picker. Tabs can save filesystem folders and locations exposed through FAR folder shortcuts, including archives and remote folders.
 
 ## Use
 
@@ -10,7 +10,15 @@ Choose **Panel Tabs Redux** from **Alt+F1** for the left panel or **Alt+F2** for
 
 In the picker, press **Insert** to add a directory as a tab, **F4** to edit the highlighted tab's directory, **F2** to rename it, or **Delete** to close it. **Enter** and **1–9** select tabs, and **Tab** shows the other visible filesystem panel's list. The checkmark identifies the current tab. A new picker entry stays inactive until you select it. Editing the current tab also changes the panel's directory.
 
-Press **F3** in the picker to pin or unpin the highlighted tab. A pinned tab keeps its saved directory while you browse. Select it again to return to that directory. **F4** can still change the saved directory. If you unpin the current tab, it adopts the directory you are browsing. New and existing tabs are unpinned by default.
+Press **F3** in the picker to pin or unpin the highlighted tab. A pinned tab keeps its saved directory while you browse. Select it again to return to that directory. **F4** can still change the saved directory. If you unpin the current tab, it adopts the directory you are browsing. New tabs are unpinned by default.
+
+From inside a supported archive, open the picker or use the usual tab shortcuts. **Insert** adds a tab for the current archive folder. **F4** edits the folder inside the archive, with a blank path for the archive root. An unpinned tab follows you into and out of an archive just as it follows ordinary folders.
+
+FAR extracts nested archives to temporary files. Tabs created in these archives are marked **[Open only]** and can jump between folders while that archive is displayed on the panel. Browsing a temporary archive preserves your existing saved destination. Once the temporary archive closes, reopen it from the original archive to browse it again.
+
+The picker and hotkeys also work on visible plugin file panels. A panel that provides a FAR folder shortcut can be saved and reopened through that shortcut. FAR can reuse the live panel if the shortcut identifies the same connection. Saved tab data is encrypted for the current Windows account because plugin shortcuts can contain credentials.
+
+Panels without folder shortcuts, such as Temporary Panel, can still use the picker. **Insert** adds a filesystem destination from those panels. Tabs that point to a live panel are marked **[Open only]** and can restore the cursor while that panel is open. Use **Tab** in the picker to switch tabs on the other side and keep the live panel open.
 
 With the supplied LuaMacro script, these keys work from an empty FAR command line.
 

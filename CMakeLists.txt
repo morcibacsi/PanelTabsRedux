@@ -8,6 +8,7 @@ project(PanelTabsCpp VERSION "${PANELTABS_VERSION}" LANGUAGES CXX)
 add_library(PanelTabsCpp MODULE PanelTabs.cpp PanelTabs.def)
 target_include_directories(PanelTabsCpp PRIVATE ../FarManager/plugins/common/unicode)
 target_compile_features(PanelTabsCpp PRIVATE cxx_std_20)
+target_link_libraries(PanelTabsCpp PRIVATE ole32 crypt32)
 target_compile_definitions(PanelTabsCpp PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_definitions(PanelTabsCpp PRIVATE
     PANELTABS_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
