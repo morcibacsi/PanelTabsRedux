@@ -5,7 +5,7 @@ local function bind(key, command, description)
     area = "Shell";
     key = key;
     flags = "EmptyCommandLine EnableOutput NoPluginPanels";
-    description = "Panel Tabs (C++): " .. description;
+    description = "Panel Tabs Redux: " .. description;
     condition = function()
       return APanel.Visible and Plugin.Exist(plugin)
     end;

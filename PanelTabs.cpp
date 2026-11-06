@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <filesystem>
 #include <iomanip>
 #include <memory>
 #include <new>
@@ -16,9 +17,11 @@ namespace
 {
 constexpr GUID PluginId{0x88ff2c99, 0xfaac, 0x494f, {0x8b, 0x40, 0xb5, 0xb5, 0xf2, 0x74, 0xed, 0xfc}};
 constexpr GUID MenuId{0x5121d451, 0x1fa2, 0x418e, {0x9c, 0xf3, 0xe2, 0xec, 0x1e, 0x94, 0x27, 0xfd}};
+constexpr GUID DiskMenuId{0xbb777a2e, 0xeb7c, 0x4278, {0xbb, 0x7a, 0x60, 0x9e, 0x21, 0x3e, 0x7f, 0xf4}};
 constexpr GUID RenameId{0x3bba88e6, 0x1048, 0x4832, {0x9c, 0x54, 0x3b, 0xc7, 0xdf, 0xfc, 0x7d, 0x7c}};
+constexpr GUID EditPathId{0x52df1904, 0x42ad, 0x431e, {0xa1, 0x57, 0x82, 0x3a, 0x28, 0x7f, 0xa7, 0x61}};
 constexpr GUID ErrorId{0x821e68d3, 0x31ea, 0x4901, {0x8b, 0xc0, 0x41, 0x70, 0xf2, 0x2a, 0x23, 0xd8}};
-constexpr auto Title = L"Panel Tabs (C++)";
+constexpr auto Title = L"Panel Tabs Redux";
 constexpr auto SettingsKey = L"TabListsV1";
 constexpr std::size_t TabLimit = 999;
 
@@ -262,17 +265,31 @@ TabList* Sync(HANDLE panel)
     return &list;
 }
 
+bool CanAdd(const TabList& list)
+{
+    if (list.tabs.size() < TabLimit)
+        return true;
+    Warn(L"This panel has reached its tab limit.");
+    return false;
+}
+
 void Add(TabList& list)
 {
-    if (list.tabs.size() == TabLimit)
-    {
-        Warn(L"This panel has reached its tab limit.");
+    if (!CanAdd(list))
         return;
-    }
     const auto& current = list.tabs[list.active];
     list.tabs.push_back({current.path, {}, current.cursor});
     list.active = list.tabs.size() - 1;
     dirty = true;
+}
+
+bool GoToDirectory(HANDLE panel, const std::wstring& path)
+{
+    FarPanelDirectory target{sizeof(target), path.c_str(), nullptr, FarGuid, nullptr};
+    if (api.PanelControl(panel, FCTL_SETPANELDIRECTORY, 0, &target))
+        return true;
+    Warn(L"Cannot open the tab's directory.", path.c_str());
+    return false;
 }
 
 bool SwitchTo(HANDLE panel, TabList& list, std::size_t index)
@@ -280,15 +297,8 @@ bool SwitchTo(HANDLE panel, TabList& list, std::size_t index)
     if (index == list.active)
         return true;
     const auto& tab = list.tabs[index];
-    if (tab.path != list.tabs[list.active].path)
-    {
-        FarPanelDirectory target{sizeof(target), tab.path.c_str(), nullptr, FarGuid, nullptr};
-        if (!api.PanelControl(panel, FCTL_SETPANELDIRECTORY, 0, &target))
-        {
-            Warn(L"Cannot open the tab's directory.", tab.path.c_str());
-            return false;
-        }
-    }
+    if (tab.path != list.tabs[list.active].path && !GoToDirectory(panel, tab.path))
+        return false;
     RestoreCursor(panel, tab.cursor);
     list.active = index;
     dirty = true;
@@ -326,6 +336,36 @@ void Rename(Tab& tab)
     }
 }
 
+std::wstring PromptForDirectory(const wchar_t* title, const std::wstring& initialPath)
+{
+    std::wstring path(32768, L'\0');
+    if (!api.InputBox(&PluginId, &EditPathId, title, L"Absolute directory path", nullptr,
+                      initialPath.c_str(), path.data(), path.size(), nullptr, FIB_BUTTONS | FIB_EDITPATH))
+        return {};
+
+    path.resize(std::char_traits<wchar_t>::length(path.c_str()));
+    if (!std::filesystem::path(path).is_absolute())
+    {
+        Warn(L"Enter an absolute directory path.");
+        return {};
+    }
+    return path;
+}
+
+void EditPath(HANDLE panel, TabList& list, std::size_t index)
+{
+    auto& tab = list.tabs[index];
+    auto path = PromptForDirectory(L"Edit tab directory", tab.path);
+    if (path.empty() || path == tab.path)
+        return;
+    if (index == list.active && !GoToDirectory(panel, path))
+        return;
+
+    tab.path = std::move(path);
+    tab.cursor = {};
+    dirty = true;
+}
+
 void AppendMenuText(std::wstring& line, std::wstring_view text)
 {
     for (const auto ch : text)
@@ -338,7 +378,7 @@ void AppendMenuText(std::wstring& line, std::wstring_view text)
 
 void Pick(HANDLE panel, TabList* list)
 {
-    constexpr FarKey keys[]{{VK_INSERT, 0}, {VK_DELETE, 0}, {VK_F2, 0}, {VK_TAB, 0}, {}};
+    constexpr FarKey keys[]{{VK_INSERT, 0}, {VK_DELETE, 0}, {VK_F2, 0}, {VK_TAB, 0}, {VK_F4, 0}, {}};
     auto highlight = list->active;
     for (;;)
     {
@@ -366,7 +406,7 @@ void Pick(HANDLE panel, TabList* list)
         intptr_t pressed = -1;
         const auto result = api.Menu(&PluginId, &MenuId, -1, -1, 0, FMENU_WRAPMODE,
                                      left ? L"Left panel tabs" : L"Right panel tabs",
-                                     L"Ins New   Del Close   F2 Rename   Tab Other panel",
+                                     L"Ins New   Del Close   F2 Rename   F4 Edit path   Tab Other panel",
                                      nullptr, keys, &pressed, items.data(), items.size());
         if (result < 0 || static_cast<std::size_t>(result) >= items.size())
             return;
@@ -374,8 +414,17 @@ void Pick(HANDLE panel, TabList* list)
         switch (pressed)
         {
         case 0:
-            Add(*list);
-            return;
+            if (CanAdd(*list))
+            {
+                auto path = PromptForDirectory(L"New tab", list->tabs[list->active].path);
+                if (!path.empty())
+                {
+                    list->tabs.push_back({std::move(path), {}, {}});
+                    highlight = list->tabs.size() - 1;
+                    dirty = true;
+                }
+            }
+            break;
         case 1:
             Close(panel, *list, highlight);
             highlight = std::min(highlight, list->tabs.size() - 1);
@@ -396,6 +445,9 @@ void Pick(HANDLE panel, TabList* list)
                 Warn(L"The other panel must be a visible filesystem panel.");
             break;
         }
+        case 4:
+            EditPath(panel, *list, highlight);
+            break;
         default:
             if (SwitchTo(panel, *list, highlight))
                 return;
@@ -404,7 +456,7 @@ void Pick(HANDLE panel, TabList* list)
     }
 }
 
-void Dispatch(std::wstring_view command)
+void Dispatch(std::wstring_view command, HANDLE panel)
 {
     constexpr auto whitespace = L" \t\r\n";
     const auto first = command.find_first_not_of(whitespace);
@@ -418,11 +470,10 @@ void Dispatch(std::wstring_view command)
         return;
     }
 
-    const auto panel = PANEL_ACTIVE;
     auto* list = Sync(panel);
     if (!list)
     {
-        Warn(L"Panel Tabs requires a visible filesystem panel.");
+        Warn(L"A visible filesystem panel is required.");
         return;
     }
     const auto count = list->tabs.size();
@@ -456,7 +507,7 @@ void WINAPI GetGlobalInfoW(GlobalInfo* info)
     info->Guid = PluginId;
     info->Title = Title;
     info->Description = L"Keyboard-driven directory tabs for FAR's file panels";
-    info->Author = L"Panel Tabs C++ contributors";
+    info->Author = L"Panel Tabs Redux contributors";
 }
 
 void WINAPI GetPluginInfoW(PluginInfo* info)
@@ -464,6 +515,7 @@ void WINAPI GetPluginInfoW(PluginInfo* info)
     static const wchar_t* const menu[]{Title};
     info->StructSize = sizeof(*info);
     info->Flags = PF_NONE;
+    info->DiskMenu = {&DiskMenuId, menu, std::size(menu)};
     info->PluginMenu = {&MenuId, menu, std::size(menu)};
     info->CommandPrefix = L"ptabs";
 }
@@ -486,6 +538,7 @@ HANDLE WINAPI OpenW(const OpenInfo* info)
     try
     {
         const wchar_t* command = L"";
+        auto panel = PANEL_ACTIVE;
         if (info->OpenFrom == OPEN_COMMANDLINE)
         {
             const auto* args = reinterpret_cast<const OpenCommandLineInfo*>(info->Data);
@@ -498,14 +551,25 @@ HANDLE WINAPI OpenW(const OpenInfo* info)
             if (args && args->Count && args->Values[0].Type == FMVT_STRING && args->Values[0].String)
                 command = args->Values[0].String;
         }
+        else if (info->OpenFrom == OPEN_LEFTDISKMENU || info->OpenFrom == OPEN_RIGHTDISKMENU)
+        {
+            PanelInfo active{};
+            active.StructSize = sizeof(active);
+            if (!api.PanelControl(PANEL_ACTIVE, FCTL_GETPANELINFO, 0, &active))
+                return nullptr;
+
+            const bool activeIsLeft = (active.Flags & PFLAGS_PANELLEFT) != 0;
+            const bool targetIsLeft = info->OpenFrom == OPEN_LEFTDISKMENU;
+            panel = activeIsLeft == targetIsLeft ? PANEL_ACTIVE : PANEL_PASSIVE;
+        }
         else if (info->OpenFrom != OPEN_PLUGINSMENU)
             return nullptr;
 
-        Dispatch(command);
+        Dispatch(command, panel);
     }
     catch (...)
     {
-        Warn(L"Panel Tabs could not complete the operation.");
+        Warn(L"Could not complete the tab operation.");
     }
     return nullptr;
 }
