@@ -1,0 +1,511 @@
+#include <plugin.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <iomanip>
+#include <memory>
+#include <new>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace
+{
+constexpr GUID PluginId{0x88ff2c99, 0xfaac, 0x494f, {0x8b, 0x40, 0xb5, 0xb5, 0xf2, 0x74, 0xed, 0xfc}};
+constexpr GUID MenuId{0x5121d451, 0x1fa2, 0x418e, {0x9c, 0xf3, 0xe2, 0xec, 0x1e, 0x94, 0x27, 0xfd}};
+constexpr GUID RenameId{0x3bba88e6, 0x1048, 0x4832, {0x9c, 0x54, 0x3b, 0xc7, 0xdf, 0xfc, 0x7d, 0x7c}};
+constexpr GUID ErrorId{0x821e68d3, 0x31ea, 0x4901, {0x8b, 0xc0, 0x41, 0x70, 0xf2, 0x2a, 0x23, 0xd8}};
+constexpr auto Title = L"Panel Tabs (C++)";
+constexpr auto SettingsKey = L"TabListsV1";
+constexpr std::size_t TabLimit = 999;
+
+struct Cursor
+{
+    std::wstring file;
+    std::size_t index{};
+    std::size_t offset{};
+};
+
+struct Tab
+{
+    std::wstring path;
+    std::wstring name;
+    Cursor cursor;
+};
+
+struct TabList
+{
+    std::vector<Tab> tabs;
+    std::size_t active{};
+    bool attached{};
+};
+
+PluginStartupInfo api{};
+std::array<TabList, 2> lists;
+bool dirty{};
+
+void Warn(const wchar_t* message, const wchar_t* detail = nullptr)
+{
+    const wchar_t* items[]{Title, message, detail};
+    api.Message(&PluginId, &ErrorId, FMSG_WARNING | FMSG_MB_OK, nullptr, items, detail ? 3 : 2, 0);
+}
+
+class Settings
+{
+public:
+    Settings()
+    {
+        FarSettingsCreate request{sizeof(request), PluginId, INVALID_HANDLE_VALUE};
+        if (api.SettingsControl(INVALID_HANDLE_VALUE, SCTL_CREATE, PSL_LOCAL, &request))
+            handle = request.Handle;
+    }
+
+    ~Settings()
+    {
+        if (handle != INVALID_HANDLE_VALUE)
+            api.SettingsControl(handle, SCTL_FREE, 0, nullptr);
+    }
+
+    Settings(const Settings&) = delete;
+    Settings& operator=(const Settings&) = delete;
+
+    HANDLE handle = INVALID_HANDLE_VALUE;
+};
+
+void Load()
+{
+    const Settings settings;
+    FarSettingsItem item{};
+    item.StructSize = sizeof(item);
+    item.Name = SettingsKey;
+    item.Type = FST_STRING;
+    if (settings.handle == INVALID_HANDLE_VALUE ||
+        !api.SettingsControl(settings.handle, SCTL_GET, 0, &item) || !item.String)
+        return;
+
+    std::wistringstream input(item.String);
+    std::array<TabList, 2> loaded;
+    for (auto& list : loaded)
+    {
+        std::size_t count{};
+        if (!(input >> count >> list.active) || count > TabLimit ||
+            (count ? list.active >= count : list.active != 0))
+            return;
+
+        list.tabs.resize(count);
+        for (auto& tab : list.tabs)
+            if (!(input >> std::quoted(tab.path) >> std::quoted(tab.name)) || tab.path.empty())
+                return;
+    }
+    if (input >> std::ws && input.eof())
+        lists = std::move(loaded);
+}
+
+void Save()
+{
+    if (!dirty)
+        return;
+
+    std::wostringstream output;
+    for (const auto& list : lists)
+    {
+        output << list.tabs.size() << L' ' << list.active << L'\n';
+        for (const auto& tab : list.tabs)
+            output << std::quoted(tab.path) << L' ' << std::quoted(tab.name) << L'\n';
+    }
+
+    const auto data = output.str();
+    const Settings settings;
+    FarSettingsItem item{};
+    item.StructSize = sizeof(item);
+    item.Name = SettingsKey;
+    item.Type = FST_STRING;
+    item.String = data.c_str();
+    if (settings.handle != INVALID_HANDLE_VALUE &&
+        api.SettingsControl(settings.handle, SCTL_SET, 0, &item))
+        dirty = false;
+    else
+        Warn(L"FAR could not save the tab lists to this profile.");
+}
+
+PanelInfo FilePanel(HANDLE panel)
+{
+    PanelInfo info{};
+    info.StructSize = sizeof(info);
+    if (!api.PanelControl(panel, FCTL_GETPANELINFO, 0, &info) ||
+        info.PanelType != PTYPE_FILEPANEL || (info.Flags & PFLAGS_PLUGIN) ||
+        !(info.Flags & PFLAGS_VISIBLE))
+        return {};
+    return info;
+}
+
+// FAR fills a structure and its trailing strings in one caller-owned buffer.
+class PanelBuffer
+{
+public:
+    void* Get(std::size_t bytes)
+    {
+        if (bytes > capacity)
+        {
+            data = std::make_unique_for_overwrite<std::byte[]>(bytes);
+            capacity = bytes;
+        }
+        return data.get();
+    }
+
+private:
+    std::unique_ptr<std::byte[]> data;
+    std::size_t capacity{};
+};
+
+std::wstring CurrentPath(HANDLE panel)
+{
+    const auto bytes = api.PanelControl(panel, FCTL_GETPANELDIRECTORY, 0, nullptr);
+    if (bytes < static_cast<intptr_t>(sizeof(FarPanelDirectory)))
+        return {};
+    PanelBuffer buffer;
+    auto* directory = ::new (buffer.Get(static_cast<std::size_t>(bytes))) FarPanelDirectory{};
+    directory->StructSize = sizeof(*directory);
+    const auto written = api.PanelControl(panel, FCTL_GETPANELDIRECTORY, bytes, directory);
+    return written > 0 && written <= bytes && directory->Name ? directory->Name : L"";
+}
+
+std::wstring_view ItemName(HANDLE panel, std::size_t index, PanelBuffer& buffer)
+{
+    const auto bytes = api.PanelControl(panel, FCTL_GETPANELITEM, index, nullptr);
+    if (bytes < static_cast<intptr_t>(sizeof(PluginPanelItem)))
+        return {};
+    auto* item = ::new (buffer.Get(static_cast<std::size_t>(bytes))) PluginPanelItem{};
+    FarGetPluginPanelItem request{sizeof(request), static_cast<std::size_t>(bytes), item};
+    const auto written = api.PanelControl(panel, FCTL_GETPANELITEM, index, &request);
+    return written > 0 && written <= bytes && item->FileName ? item->FileName : L"";
+}
+
+Cursor ReadCursor(HANDLE panel, const PanelInfo& info)
+{
+    PanelBuffer buffer;
+    return {
+        info.CurrentItem < info.ItemsNumber ? std::wstring(ItemName(panel, info.CurrentItem, buffer)) : L"",
+        info.CurrentItem,
+        info.CurrentItem - std::min(info.CurrentItem, info.TopPanelItem)
+    };
+}
+
+void RestoreCursor(HANDLE panel, const Cursor& cursor)
+{
+    if (cursor.file.empty())
+        return;
+    const auto info = FilePanel(panel);
+    PanelBuffer buffer;
+    auto index = cursor.index;
+    if (index >= info.ItemsNumber || ItemName(panel, index, buffer) != cursor.file)
+    {
+        // Sort order or directory contents may have changed since the last visit.
+        for (index = 0; index < info.ItemsNumber; ++index)
+            if (ItemName(panel, index, buffer) == cursor.file)
+                break;
+    }
+    if (index < info.ItemsNumber)
+    {
+        PanelRedrawInfo redraw{sizeof(redraw), index, index - std::min(index, cursor.offset)};
+        api.PanelControl(panel, FCTL_REDRAWPANEL, 0, &redraw);
+    }
+}
+
+TabList* Sync(HANDLE panel)
+{
+    const auto info = FilePanel(panel);
+    if (!info.StructSize)
+        return nullptr;
+    auto path = CurrentPath(panel);
+    if (path.empty())
+        return nullptr;
+
+    auto& list = lists[(info.Flags & PFLAGS_PANELLEFT) ? 0 : 1];
+    auto cursor = ReadCursor(panel, info);
+    if (!list.attached)
+    {
+        // FAR chooses the initial directories. Preserve saved tabs when it starts elsewhere.
+        if (list.tabs.empty() || list.tabs[list.active].path != path)
+        {
+            const auto match = std::ranges::find(list.tabs, path, &Tab::path);
+            if (match != list.tabs.end())
+                list.active = static_cast<std::size_t>(match - list.tabs.begin());
+            else
+            {
+                if (list.tabs.size() == TabLimit)
+                {
+                    Warn(L"The panel's tab list is full. Open FAR in a saved tab's directory to manage it.");
+                    return nullptr;
+                }
+                list.tabs.push_back({std::move(path), {}, std::move(cursor)});
+                list.active = list.tabs.size() - 1;
+                list.attached = true;
+                dirty = true;
+                return &list;
+            }
+            dirty = true;
+        }
+        list.attached = true;
+    }
+
+    auto& tab = list.tabs[list.active];
+    if (tab.path != path)
+    {
+        tab.path = std::move(path);
+        dirty = true;
+    }
+    tab.cursor = std::move(cursor);
+    return &list;
+}
+
+void Add(TabList& list)
+{
+    if (list.tabs.size() == TabLimit)
+    {
+        Warn(L"This panel has reached its tab limit.");
+        return;
+    }
+    const auto& current = list.tabs[list.active];
+    list.tabs.push_back({current.path, {}, current.cursor});
+    list.active = list.tabs.size() - 1;
+    dirty = true;
+}
+
+bool SwitchTo(HANDLE panel, TabList& list, std::size_t index)
+{
+    if (index == list.active)
+        return true;
+    const auto& tab = list.tabs[index];
+    if (tab.path != list.tabs[list.active].path)
+    {
+        FarPanelDirectory target{sizeof(target), tab.path.c_str(), nullptr, FarGuid, nullptr};
+        if (!api.PanelControl(panel, FCTL_SETPANELDIRECTORY, 0, &target))
+        {
+            Warn(L"Cannot open the tab's directory.", tab.path.c_str());
+            return false;
+        }
+    }
+    RestoreCursor(panel, tab.cursor);
+    list.active = index;
+    dirty = true;
+    return true;
+}
+
+void Close(HANDLE panel, TabList& list, std::size_t index)
+{
+    if (list.tabs.size() == 1)
+    {
+        Warn(L"Keep at least one tab on each panel.");
+        return;
+    }
+    if (index == list.active)
+    {
+        const auto replacement = index + 1 < list.tabs.size() ? index + 1 : index - 1;
+        if (!SwitchTo(panel, list, replacement))
+            return;
+    }
+    list.tabs.erase(list.tabs.begin() + static_cast<std::ptrdiff_t>(index));
+    if (index < list.active)
+        --list.active;
+    dirty = true;
+}
+
+void Rename(Tab& tab)
+{
+    wchar_t name[128]{};
+    if (api.InputBox(&PluginId, &RenameId, L"Rename tab", L"Leave blank to use the directory path",
+                     nullptr, tab.name.c_str(), name, std::size(name), nullptr,
+                     FIB_BUTTONS | FIB_ENABLEEMPTY) && tab.name != name)
+    {
+        tab.name = name;
+        dirty = true;
+    }
+}
+
+void AppendMenuText(std::wstring& line, std::wstring_view text)
+{
+    for (const auto ch : text)
+    {
+        if (ch == L'&')
+            line += L'&';
+        line += ch < L' ' ? L' ' : ch;
+    }
+}
+
+void Pick(HANDLE panel, TabList* list)
+{
+    constexpr FarKey keys[]{{VK_INSERT, 0}, {VK_DELETE, 0}, {VK_F2, 0}, {VK_TAB, 0}, {}};
+    auto highlight = list->active;
+    for (;;)
+    {
+        std::vector<std::wstring> labels(list->tabs.size());
+        std::vector<FarMenuItem> items(list->tabs.size());
+        for (std::size_t i = 0; i < items.size(); ++i)
+        {
+            const auto& tab = list->tabs[i];
+            auto& label = labels[i];
+            if (i < 9)
+                label += L'&';
+            label += std::to_wstring(i + 1) + L"  ";
+            if (!tab.name.empty())
+            {
+                AppendMenuText(label, tab.name);
+                label += L"  |  ";
+            }
+            AppendMenuText(label, tab.path);
+            items[i].Text = label.c_str();
+            items[i].Flags = (i == list->active ? MIF_CHECKED : MIF_NONE) |
+                             (i == highlight ? MIF_SELECTED : MIF_NONE);
+        }
+
+        const bool left = list == &lists[0];
+        intptr_t pressed = -1;
+        const auto result = api.Menu(&PluginId, &MenuId, -1, -1, 0, FMENU_WRAPMODE,
+                                     left ? L"Left panel tabs" : L"Right panel tabs",
+                                     L"Ins New   Del Close   F2 Rename   Tab Other panel",
+                                     nullptr, keys, &pressed, items.data(), items.size());
+        if (result < 0 || static_cast<std::size_t>(result) >= items.size())
+            return;
+        highlight = static_cast<std::size_t>(result);
+        switch (pressed)
+        {
+        case 0:
+            Add(*list);
+            return;
+        case 1:
+            Close(panel, *list, highlight);
+            highlight = std::min(highlight, list->tabs.size() - 1);
+            break;
+        case 2:
+            Rename(list->tabs[highlight]);
+            break;
+        case 3:
+        {
+            const auto other = panel == PANEL_ACTIVE ? PANEL_PASSIVE : PANEL_ACTIVE;
+            if (auto* otherList = Sync(other))
+            {
+                panel = other;
+                list = otherList;
+                highlight = list->active;
+            }
+            else
+                Warn(L"The other panel must be a visible filesystem panel.");
+            break;
+        }
+        default:
+            if (SwitchTo(panel, *list, highlight))
+                return;
+            break;
+        }
+    }
+}
+
+void Dispatch(std::wstring_view command)
+{
+    constexpr auto whitespace = L" \t\r\n";
+    const auto first = command.find_first_not_of(whitespace);
+    command = first == command.npos
+        ? std::wstring_view{} : command.substr(first, command.find_last_not_of(whitespace) - first + 1);
+    const bool number = command.size() == 1 && command.front() >= L'1' && command.front() <= L'9';
+    if (!command.empty() && command != L"list" && command != L"new" &&
+        command != L"close" && command != L"next" && command != L"prev" && !number)
+    {
+        Warn(L"Use ptabs: with list, new, close, next, prev, or a tab number from 1 to 9.");
+        return;
+    }
+
+    const auto panel = PANEL_ACTIVE;
+    auto* list = Sync(panel);
+    if (!list)
+    {
+        Warn(L"Panel Tabs requires a visible filesystem panel.");
+        return;
+    }
+    const auto count = list->tabs.size();
+    if (command.empty() || command == L"list")
+        Pick(panel, list);
+    else if (command == L"new")
+        Add(*list);
+    else if (command == L"close")
+        Close(panel, *list, list->active);
+    else if (command == L"next")
+        SwitchTo(panel, *list, (list->active + 1) % count);
+    else if (command == L"prev")
+        SwitchTo(panel, *list, (list->active + count - 1) % count);
+    else
+    {
+        const auto index = static_cast<std::size_t>(command.front() - L'1');
+        if (index < count)
+            SwitchTo(panel, *list, index);
+        else
+            MessageBeep(MB_OK);
+    }
+    Save();
+}
+}
+
+void WINAPI GetGlobalInfoW(GlobalInfo* info)
+{
+    info->StructSize = sizeof(*info);
+    info->MinFarVersion = MAKEFARVERSION(3, 0, 0, 6666, VS_RELEASE);
+    info->Version = MAKEFARVERSION(1, 0, 0, 0, VS_RELEASE);
+    info->Guid = PluginId;
+    info->Title = Title;
+    info->Description = L"Keyboard-driven directory tabs for FAR's file panels";
+    info->Author = L"Panel Tabs C++ contributors";
+}
+
+void WINAPI GetPluginInfoW(PluginInfo* info)
+{
+    static const wchar_t* const menu[]{Title};
+    info->StructSize = sizeof(*info);
+    info->Flags = PF_NONE;
+    info->PluginMenu = {&MenuId, menu, std::size(menu)};
+    info->CommandPrefix = L"ptabs";
+}
+
+void WINAPI SetStartupInfoW(const PluginStartupInfo* info)
+{
+    api = *info;
+    try
+    {
+        Load();
+    }
+    catch (...)
+    {
+        Warn(L"FAR could not read the saved tab lists.");
+    }
+}
+
+HANDLE WINAPI OpenW(const OpenInfo* info)
+{
+    try
+    {
+        const wchar_t* command = L"";
+        if (info->OpenFrom == OPEN_COMMANDLINE)
+        {
+            const auto* args = reinterpret_cast<const OpenCommandLineInfo*>(info->Data);
+            if (args && args->CommandLine)
+                command = args->CommandLine;
+        }
+        else if (info->OpenFrom == OPEN_FROMMACRO)
+        {
+            const auto* args = reinterpret_cast<const OpenMacroInfo*>(info->Data);
+            if (args && args->Count && args->Values[0].Type == FMVT_STRING && args->Values[0].String)
+                command = args->Values[0].String;
+        }
+        else if (info->OpenFrom != OPEN_PLUGINSMENU)
+            return nullptr;
+
+        Dispatch(command);
+    }
+    catch (...)
+    {
+        Warn(L"Panel Tabs could not complete the operation.");
+    }
+    return nullptr;
+}
