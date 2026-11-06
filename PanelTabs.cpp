@@ -535,7 +535,8 @@ void WINAPI GetGlobalInfoW(GlobalInfo* info)
 {
     info->StructSize = sizeof(*info);
     info->MinFarVersion = MAKEFARVERSION(3, 0, 0, 6666, VS_RELEASE);
-    info->Version = MAKEFARVERSION(1, 0, 0, 0, VS_RELEASE);
+    info->Version = MAKEFARVERSION(
+        PANELTABS_VERSION_MAJOR, PANELTABS_VERSION_MINOR, PANELTABS_VERSION_PATCH, 0, VS_RELEASE);
     info->Guid = PluginId;
     info->Title = Title;
     info->Description = L"Keyboard-driven directory tabs for FAR's file panels";

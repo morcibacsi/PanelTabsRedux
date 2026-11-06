@@ -26,7 +26,7 @@ Edit `PanelTabs.lua` to rebind the keys. The same commands are available through
 
 ## Build and install
 
-Use Visual Studio 2026 with the Desktop development with C++ workload and CMake 4.2 or newer. Open this folder in Visual Studio as a CMake project, or run the following commands from this folder.
+Use Visual Studio 2026 with the Desktop development with C++ workload and CMake 4.2 or newer. Keep the FAR Manager source checkout in a sibling directory named `FarManager` for the plugin SDK header. Open this folder in Visual Studio as a CMake project, or run the following commands from this folder.
 
 ```powershell
 cmake -S . -B out/x86 -G "Visual Studio 18 2026" -A Win32
@@ -42,3 +42,23 @@ cmake --build out/x64 --config Release
 4. Restart FAR and open the picker from **Alt+F1**, **Alt+F2**, or **F11**.
 
 FAR sets `FARPROFILE` inside its session. To see the active profile path, run `echo %FARPROFILE%` from FAR's command line. The DLL uses a separate plugin ID and the `ptabs:` prefix.
+
+## Updates through Renewal
+
+1. Copy `RenewalCustom.xml` beside `Renewal.dll`. If that directory already has a `RenewalCustom.xml`, add the Panel Tabs Redux `<mod>` entry to its `<pd>` section.
+2. Open Renewal and check for updates. If you previously configured Panel Tabs Redux in Renewal, enable the custom source for its entry.
+
+Renewal uses the latest stable GitHub release and downloads the ZIP matching FAR's architecture. If you installed the optional LuaMacro script, update the copy in your macro directory separately.
+
+### Build release ZIPs
+
+Push a version tag such as `v1.0.1` to GitHub. The release workflow builds both architectures with the version from the tag and attaches the ZIPs to a draft GitHub release. Publish the draft as a stable release to make it available to Renewal.
+
+To build release ZIPs locally, pass `-DPANELTABS_VERSION=1.0.1` when configuring each architecture, build both Release configurations, then run these commands from the project directory.
+
+```powershell
+cpack --config out/x86/CPackConfig.cmake -C Release -B out/packages
+cpack --config out/x64/CPackConfig.cmake -C Release -B out/packages
+```
+
+CMake uses the same version for the ZIP filenames and for the plugin version that Renewal reads from the DLL. Publish a higher version for Renewal to offer an update.

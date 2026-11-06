@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<renewal>
+  <pd>
+    <mod guid="{88FF2C99-FAAC-494F-8B40-B5B5F274EDFC}" name="PanelTabsRedux">
+      <homepage>https://github.com/morcibacsi/PanelTabsRedux</homepage>
+      <changelog>https://github.com/morcibacsi/PanelTabsRedux/releases</changelog>
+      <dlpage>https://api.github.com/repos/morcibacsi/PanelTabsRedux/releases/latest</dlpage>
+      <dlrgex>"browser_download_url":\s*"(https://github\.com/morcibacsi/PanelTabsRedux/releases/download/[^"\s/]+/PanelTabsRedux-(\d+)\.(\d+)\.(\d+)-${ARCH}\.zip)"</dlrgex>
+    </mod>
+  </pd>
+</renewal>
