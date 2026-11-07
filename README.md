@@ -10,6 +10,15 @@ Tabs for the left and right panels of FAR Manager 3.0 (build 6666 or newer). It 
 
 The tab list opens in a menu (the "picker"). FarTabs showed tabs in an always-visible strip, which this version does not have.
 
+```
+╔════════════════════════ Left panel tabs ════════════════════════╗
+║   1  [Pinned] C:\Projects                                       ║
+║   2  [Pinned] Firmware  |  C:\Projects\firmware                 ║
+║ √ 3  D:\Downloads                                               ║
+║   -  C:\Users\Me\Documents                                      ║
+╚═ Ins New  Del Close  F3 Pin  F4 Edit  Ctrl+↑/↓ Move  Tab Other ═╝
+```
+
 ## Install
 
 1. Download the ZIP matching your **FAR.exe** (`x86` or `x64`) from the GitHub Releases page.
