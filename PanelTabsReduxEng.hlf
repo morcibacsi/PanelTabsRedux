@@ -1,0 +1,141 @@
+﻿.Language=English,English
+.PluginContents=Panel Tabs Redux
+.Options CtrlStartPosChar=^<wrap>
+
+@Contents
+$ #Panel Tabs Redux#
+ Panel Tabs Redux adds tabs to the left and right panels. Each panel has its
+own list of tabs, and the lists are saved between sessions.
+
+ To open the tab list (the picker), choose #Panel Tabs Redux# from #Alt+F1#
+for the left panel or #Alt+F2# for the right panel. You can also open it for
+the active panel from the ~plugins menu~@:PluginCommands@ (#F11#) or by typing
+#ptabs:# on the command line. If the entry is missing from #Alt+F1# or #Alt+F2#,
+press #F9# there and enable #Show plugins#.
+
+   ~The tab picker~@Picker@
+   ~Editing a tab~@EditTab@
+   ~Pinned and unpinned tabs~@Pinning@
+   ~Archives and plugin panels~@Locations@
+   ~Hotkeys and commands~@Commands@
+
+@Picker
+$ #Tab picker#
+ The picker lists the tabs of one panel. The checkmark shows the current tab.
+Each line shows the tab's shortcut, its tags, its name, and its location.
+
+ #Enter#              ^<wrap>Switch to the highlighted tab.
+ #1#-#9#, #A#-#Z#     ^<wrap>Switch to the tab with that shortcut.
+ #Insert#             ^<wrap>Add a tab. For a folder, you are asked for its
+path, starting with the current directory. In an archive or a plugin panel, the
+tab is added for the current location. A new tab does not become current until
+you select it.
+ #F4#                 ^<wrap>~Edit~@EditTab@ the highlighted tab.
+ #F3#                 ^<wrap>~Pin or unpin~@Pinning@ the highlighted tab.
+ #Delete#             ^<wrap>Close the highlighted tab. Each panel keeps at
+least one tab.
+ #Ctrl+Up#, #Ctrl+Down#  ^<wrap>Move the highlighted tab. Its shortcut does not
+change.
+ #Tab#                ^<wrap>Show the other panel's tabs.
+ #Esc#                ^<wrap>Close the picker.
+
+ Tags:
+
+ #[Pinned]#           ^<wrap>The tab keeps its saved directory. See
+~Pinned and unpinned tabs~@Pinning@.
+ #[Open only]#        ^<wrap>The tab points to something that cannot be
+reopened later. See ~Archives and plugin panels~@Locations@.
+
+ See also: ~Contents~@Contents@
+
+@EditTab
+$ #Editing a tab#
+ Press #F4# in the ~picker~@Picker@ to change a tab.
+
+ #Name#               ^<wrap>A label shown in the picker. Leave it empty to
+show only the location.
+ #Path#               ^<wrap>The tab's directory. If you change the path of the
+current tab, the panel goes there. Inside an archive, this is the folder in the
+archive, and an empty path means the archive root. Tabs that point to an open
+panel, such as the Temporary Panel, have no editable path.
+ #Shortcut#           ^<wrap>One key from #1#-#9# or #A#-#Z#. Leave it empty to
+remove the shortcut. New tabs get the first free key automatically.
+ #Pinned#             ^<wrap>Keep the saved directory while you browse. See
+~Pinned and unpinned tabs~@Pinning@.
+
+ If the shortcut is already used by another tab on the same panel, choose
+#Use anyway# to move it to this tab, or #Cancel# to go back to the editor.
+
+ See also: ~Contents~@Contents@
+
+@Pinning
+$ #Pinned and unpinned tabs#
+ An #unpinned# tab follows you. When you browse to another directory, the
+current tab is updated to that directory. New tabs are unpinned.
+
+ A #pinned# tab keeps its saved directory while you browse. Select it again
+to go back to that directory. To change the saved directory, use ~F4~@EditTab@.
+
+ Press #F3# in the picker to pin or unpin a tab. If you unpin the current tab,
+it takes the directory you are in now.
+
+ When you switch away from a tab, it remembers the file under the cursor for
+the rest of the session.
+
+ See also: ~Contents~@Contents@
+
+@Locations
+$ #Archives and plugin panels#
+ #Archives#
+
+ Tabs work inside archives that FAR can open. #Insert# adds a tab for the
+current folder in the archive. An unpinned tab follows you into and out of
+archives just as it follows ordinary folders.
+
+ FAR extracts an archive inside another archive to a temporary file. Tabs in
+such archives are marked #[Open only]# and work only while that archive is
+open on the panel. After it closes, open it again from the outer archive.
+
+ #Plugin panels#
+
+ The picker and hotkeys also work on plugin panels. If the plugin provides a folder shortcut, the tab can open the
+location again later.
+
+ Panels without folder shortcuts, such as the Temporary Panel, get
+#[Open only]# tabs that work only while the panel is open. On such a panel,
+#Insert# asks for a folder path to add instead, and #Ctrl+Alt+T# adds an
+#[Open only]# tab. To switch tabs on the other
+side without closing the panel, press #Tab# in the picker.
+
+ Folder shortcuts can contain user names and passwords. For that reason, the
+saved tabs are encrypted for your Windows account.
+
+ See also: ~Contents~@Contents@
+
+@Commands
+$ #Hotkeys and commands#
+ The macro script #PanelTabs.lua# adds these hotkeys. They work when the
+command line is empty.
+
+ #Ctrl+Alt+Space#     ^<wrap>Open the picker.
+ #Ctrl+Alt+T#         ^<wrap>Add a tab for the current location and switch
+to it.
+ #Ctrl+Alt+W#         ^<wrap>Close the current tab.
+ #Ctrl+Alt+PgUp#      ^<wrap>Previous tab.
+ #Ctrl+Alt+PgDn#      ^<wrap>Next tab.
+ #Alt+Shift+1#-#9#, #A#-#Z#  ^<wrap>Switch to the tab with that shortcut.
+
+ To install the script, copy it to #%FARPROFILE%\Macros\scripts# and run
+#macro:load#. To change the keys, edit the script.
+
+ The same actions are available from the command line:
+
+ #ptabs:#, #ptabs:list#  ^<wrap>Open the picker.
+ #ptabs:new#          ^<wrap>Add a tab for the current location and switch
+to it.
+ #ptabs:close#        ^<wrap>Close the current tab.
+ #ptabs:prev#         ^<wrap>Previous tab.
+ #ptabs:next#         ^<wrap>Next tab.
+ #ptabs:1#, #ptabs:A#, ...  ^<wrap>Switch to the tab with that shortcut.
+
+ See also: ~Contents~@Contents@

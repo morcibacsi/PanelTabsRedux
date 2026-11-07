@@ -604,7 +604,7 @@ std::optional<std::wstring> PromptForDirectory(const std::wstring& initialPath)
 {
     std::wstring path(32768, L'\0');
     if (!api.InputBox(&PluginId, &NewTabId, Msg(Message::NewTab), Msg(Message::AbsolutePathPrompt),
-                      nullptr, initialPath.c_str(), path.data(), path.size(), nullptr, FIB_BUTTONS | FIB_EDITPATH))
+                      nullptr, initialPath.c_str(), path.data(), path.size(), L"Picker", FIB_BUTTONS | FIB_EDITPATH))
         return std::nullopt;
 
     path.resize(std::char_traits<wchar_t>::length(path.c_str()));
@@ -645,7 +645,7 @@ bool ShowTabEditor(const Location& location, TabEdit& edit)
         {DI_BUTTON, 0, 9, 0, 9, 0, nullptr, nullptr, DIF_CENTERGROUP | DIF_DEFAULTBUTTON, Msg(Message::Save)},
         {DI_BUTTON, 0, 9, 0, 9, 0, nullptr, nullptr, DIF_CENTERGROUP, Msg(Message::Cancel)},
     };
-    const auto handle = api.DialogInit(&PluginId, &EditTabId, -1, -1, 64, 12, nullptr,
+    const auto handle = api.DialogInit(&PluginId, &EditTabId, -1, -1, 64, 12, L"EditTab",
                                       items, std::size(items), 0, FDLG_NONE, nullptr, nullptr);
     if (!handle || handle == INVALID_HANDLE_VALUE)
         return false;
@@ -673,7 +673,7 @@ bool ConfirmShortcutTransfer(const Tab& previous)
     const auto detail = Msg(Message::AssignedTo) + assignedTo;
     const wchar_t* items[]{Msg(Message::ReassignShortcut), Msg(Message::ReassignPrompt), detail.c_str(),
                           Msg(Message::Cancel), Msg(Message::UseAnyway)};
-    return api.Message(&PluginId, &ErrorId, FMSG_WARNING, nullptr, items, std::size(items), 2) == 1;
+    return api.Message(&PluginId, &ErrorId, FMSG_WARNING, L"EditTab", items, std::size(items), 2) == 1;
 }
 
 void EditTab(HANDLE panel, TabList& list, std::size_t index)
@@ -779,7 +779,7 @@ void Pick(HANDLE panel, TabList* list)
         const auto result = api.Menu(&PluginId, &MenuId, -1, -1, 0, FMENU_WRAPMODE,
                                      left ? Msg(Message::LeftPanelTabs) : Msg(Message::RightPanelTabs),
                                      Msg(Message::PickerHelp),
-                                     nullptr, keys, &pressed, items.data(), items.size());
+                                     L"Picker", keys, &pressed, items.data(), items.size());
         if (result < 0 || static_cast<std::size_t>(result) >= items.size())
             return;
         highlight = static_cast<std::size_t>(result);

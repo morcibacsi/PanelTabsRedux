@@ -21,7 +21,7 @@ To build from source, see [BUILDING.md](BUILDING.md).
 
 ## Use
 
-To open the picker, choose **Panel Tabs Redux** from **Alt+F1** (left panel) or **Alt+F2** (right panel). You can also open it for the active panel from **F11** or with `ptabs:`. If the entry is missing from Alt+F1/Alt+F2, press **F9** there and enable **Show plugins**.
+To open the picker, choose **Panel Tabs Redux** from **Alt+F1** (left panel) or **Alt+F2** (right panel). You can also open it for the active panel from **F11** or with `ptabs:`. If the entry is missing from Alt+F1/Alt+F2, press **F9** there and enable **Show plugins**. Press **F1** in the picker or the tab editor for help.
 
 ### In the picker
 
@@ -63,10 +63,10 @@ Renewal does not update the macro script. If you use `PanelTabs.lua`, copy the n
 
 ## Translations
 
-To add a language, copy `PanelTabsReduxEng.lng` and change its `.Language` header. Then translate the quoted strings.
+To add a language, copy `PanelTabsReduxEng.lng` and change its `.Language` header. Then translate the quoted strings. For the help, copy `PanelTabsReduxEng.hlf` the same way and translate the text, keeping the `@Topic` lines and link targets unchanged.
 
 - Keep the order of the messages.
 - Keep the `%s` placeholder in the macro description.
-- Save the file as UTF-8 with a BOM, next to the DLL.
+- Save the files as UTF-8 with a BOM, next to the DLL.
 
 After changing FAR's language, run `macro:load` to update the macro descriptions.

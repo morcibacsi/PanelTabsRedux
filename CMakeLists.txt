@@ -6,6 +6,7 @@ endif()
 project(PanelTabsCpp VERSION "${PANELTABS_VERSION}" LANGUAGES CXX)
 
 set(LANGUAGE_FILES PanelTabsReduxEng.lng PanelTabsReduxRus.lng)
+set(HELP_FILES PanelTabsReduxEng.hlf PanelTabsReduxRus.hlf)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${LANGUAGE_FILES})
 set(message_id_pattern "^//\\[([A-Za-z][A-Za-z0-9]*)\\]$")
 set(message_text_pattern "^\".*\"$")
@@ -40,7 +41,7 @@ inline constexpr const wchar_t* EnglishMessages[]{
 ")
 
 set(plugin_output_dir "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
-foreach(language_file IN LISTS LANGUAGE_FILES)
+foreach(language_file IN LISTS LANGUAGE_FILES HELP_FILES)
     file(GENERATE OUTPUT "${plugin_output_dir}/${language_file}" INPUT "${language_file}")
 endforeach()
 
@@ -62,7 +63,7 @@ set_target_properties(PanelTabsCpp PROPERTIES
 )
 
 install(TARGETS PanelTabsCpp LIBRARY DESTINATION .)
-install(FILES ${LANGUAGE_FILES} PanelTabs.lua RenewalCustom.xml README.md DESTINATION .)
+install(FILES ${LANGUAGE_FILES} ${HELP_FILES} PanelTabs.lua RenewalCustom.xml README.md DESTINATION .)
 
 set(package_arch "${CMAKE_CXX_COMPILER_ARCHITECTURE_ID}")
 if(package_arch STREQUAL "X86")

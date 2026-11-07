@@ -18,7 +18,7 @@ cmake -S . -B out/x64 -G "Visual Studio 18 2026" -A x64
 cmake --build out/x64 --config Release
 ```
 
-The DLL is written to `out/x86/bin/Release/PanelTabsRedux.dll` or `out/x64/bin/Release/PanelTabsRedux.dll`. To install it, copy the DLL and both `.lng` files into a `PanelTabsRedux` folder under FAR's `Plugins` directory. Use the DLL that matches the architecture of **FAR.exe**.
+The DLL is written to `out/x86/bin/Release/PanelTabsRedux.dll` or `out/x64/bin/Release/PanelTabsRedux.dll`. To install it, copy the DLL and the `.lng` and `.hlf` files into a `PanelTabsRedux` folder under FAR's `Plugins` directory. Use the DLL that matches the architecture of **FAR.exe**.
 
 If you are upgrading from an early build, remove the old `PanelTabsCpp.dll`.
 
